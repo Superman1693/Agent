@@ -1,0 +1,118 @@
+package com.ahead.aiagent.service.impl;
+
+import com.ahead.aiagent.common.ErrorCode;
+import com.ahead.aiagent.exception.BusinessException;
+import com.ahead.aiagent.mapper.UserMapper;
+import com.ahead.aiagent.model.dto.UserLoginRequest;
+import com.ahead.aiagent.model.dto.UserRegisterRequest;
+import com.ahead.aiagent.model.dto.UserUpdateRequest;
+import com.ahead.aiagent.model.entity.User;
+import com.ahead.aiagent.model.vo.LoginVO;
+import com.ahead.aiagent.model.vo.UserVO;
+import com.ahead.aiagent.service.UserService;
+import com.ahead.aiagent.utils.JwtUtils;
+import com.ahead.aiagent.utils.PasswordUtils;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+@Service
+@RequiredArgsConstructor
+public class UserServiceImpl implements UserService {
+
+    private final UserMapper userMapper;
+    private final JwtUtils jwtUtils;
+
+    @Override
+    public Long register(UserRegisterRequest request) {
+        Long count = userMapper.selectCount(
+                new LambdaQueryWrapper<User>().eq(User::getUsername, request.getUsername()));
+        if (count > 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户名已存在");
+        }
+        User user = new User();
+        user.setUsername(request.getUsername());
+        user.setPassword(PasswordUtils.encode(request.getPassword()));
+        user.setEmail(request.getEmail());
+        user.setRole("user");
+        user.setStatus(1);
+        userMapper.insert(user);
+        return user.getId();
+    }
+
+    @Override
+    public LoginVO login(UserLoginRequest request) {
+        User user = userMapper.selectOne(
+                new LambdaQueryWrapper<User>().eq(User::getUsername, request.getUsername()));
+        if (user == null || !PasswordUtils.matches(request.getPassword(), user.getPassword())) {
+            throw new BusinessException(ErrorCode.LOGIN_FAILED, "用户名或密码错误");
+        }
+        if (user.getStatus() != 1) {
+            throw new BusinessException(ErrorCode.FORBIDDEN_ERROR, "账号已被禁用");
+        }
+        String token = jwtUtils.generateToken(user.getId(), user.getUsername(), user.getRole());
+        LoginVO loginVO = new LoginVO();
+        loginVO.setToken(token);
+        loginVO.setUser(toVO(user));
+        return loginVO;
+    }
+
+    @Override
+    public User getById(Long id) {
+        return userMapper.selectById(id);
+    }
+
+    @Override
+    public UserVO getUserInfo(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "用户不存在");
+        }
+        return toVO(user);
+    }
+
+    @Override
+    public UserVO updateInfo(Long userId, UserUpdateRequest request) {
+        // 修改密码：需要验证旧密码
+        if (StringUtils.hasText(request.getNewPassword())) {
+            if (!StringUtils.hasText(request.getOldPassword())) {
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "修改密码需要提供旧密码");
+            }
+            User current = userMapper.selectById(userId);
+            if (!PasswordUtils.matches(request.getOldPassword(), current.getPassword())) {
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "旧密码不正确");
+            }
+        }
+
+        LambdaUpdateWrapper<User> wrapper = new LambdaUpdateWrapper<User>().eq(User::getId, userId);
+        if (StringUtils.hasText(request.getEmail())) {
+            wrapper.set(User::getEmail, request.getEmail());
+        }
+        if (StringUtils.hasText(request.getNewPassword())) {
+            wrapper.set(User::getPassword, PasswordUtils.encode(request.getNewPassword()));
+        }
+        userMapper.update(null, wrapper);
+        return getUserInfo(userId);
+    }
+
+    @Override
+    public UserVO updateAvatar(Long userId, String avatarUrl) {
+        userMapper.update(null,
+                new LambdaUpdateWrapper<User>()
+                        .eq(User::getId, userId)
+                        .set(User::getAvatarUrl, avatarUrl));
+        return getUserInfo(userId);
+    }
+
+    private UserVO toVO(User user) {
+        UserVO vo = new UserVO();
+        vo.setId(user.getId());
+        vo.setUsername(user.getUsername());
+        vo.setEmail(user.getEmail());
+        vo.setAvatarUrl(user.getAvatarUrl());
+        vo.setRole(user.getRole());
+        return vo;
+    }
+}
