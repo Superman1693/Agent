@@ -23,6 +23,10 @@ public class FileArtifactService {
     private final Map<String, ArtifactMeta> artifactMap = new ConcurrentHashMap<>();
 
     public String registerPdfArtifact(String absolutePath, String fileName, Long ownerUserId) {
+        return registerArtifact(absolutePath, fileName, ownerUserId);
+    }
+
+    public String registerArtifact(String absolutePath, String fileName, Long ownerUserId) {
         String artifactId = "a_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         String downloadToken = "dl_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         File file = new File(absolutePath);

@@ -210,6 +210,7 @@ public class RecommendationServiceImpl implements RecommendationService {
      */
     private List<Recommendation> parseRecommendationsFromJson(String jsonResponse, String keyword) {
         List<Recommendation> recommendations = new ArrayList<>();
+        Set<String> usedImageUrls = new HashSet<>();
 
         try {
             // 清理可能的 markdown 代码块标记
@@ -251,8 +252,8 @@ public class RecommendationServiceImpl implements RecommendationService {
                 rec.setSource(keyword);
                 rec.setIsActive(1);
 
-                // 生成稳定的图片 URL
-                rec.setImageUrl(generateStableImageUrl(rec.getLocation(), rec.getTitle()));
+                // 根据景点标题 + 地点检索图片，并在同一批次内去重
+                rec.setImageUrl(generateRelevantImageUrl(rec, usedImageUrls));
 
                 recommendations.add(rec);
             }
@@ -267,16 +268,52 @@ public class RecommendationServiceImpl implements RecommendationService {
     /**
      * 生成稳定的图片 URL
      */
-    private String generateStableImageUrl(String location, String title) {
-        try {
-            String query = location + " travel";
+    private String generateRelevantImageUrl(Recommendation rec, Set<String> usedImageUrls) {
+        String title = StrUtil.blankToDefault(rec.getTitle(), "").trim();
+        String location = StrUtil.blankToDefault(rec.getLocation(), "").trim();
 
+        List<String> queryCandidates = new ArrayList<>();
+
+        // 优先景点名称本身，提升图片匹配度
+        if (StrUtil.isNotBlank(title)) {
+            queryCandidates.add(title + " 景点");
+            queryCandidates.add(title + " landmark");
+        }
+
+        // 次选标题+地点，避免仅按地点导致同城同图
+        if (StrUtil.isNotBlank(title) && StrUtil.isNotBlank(location)) {
+            queryCandidates.add(title + " " + location + " 旅游");
+            queryCandidates.add(title + " " + location + " attraction");
+        }
+
+        // 再次选地点关键词
+        if (StrUtil.isNotBlank(location)) {
+            queryCandidates.add(location + " 景点");
+            queryCandidates.add(location + " travel attraction");
+        }
+
+        for (String query : queryCandidates) {
+            String imageUrl = searchPexelsImage(query, title + location, usedImageUrls);
+            if (StrUtil.isNotBlank(imageUrl)) {
+                usedImageUrls.add(imageUrl);
+                return imageUrl;
+            }
+        }
+
+        // 失败时返回稳定占位图
+        int seed = Math.abs((location + title).hashCode());
+        return String.format("https://picsum.photos/seed/%d/800/600", seed);
+    }
+
+    private String searchPexelsImage(String query, String selectionSeed, Set<String> usedImageUrls) {
+        try {
             Map<String, String> headers = new HashMap<>();
             headers.put("Authorization", "fVCsVgtgxpOsTnHSuHBF18xrAIz1yAQwR2uCTYCRDowxSBqL8NPweWyP");
 
             Map<String, Object> params = new HashMap<>();
             params.put("query", query);
-            params.put("per_page", "1");
+            params.put("per_page", "12");
+            params.put("orientation", "landscape");
 
             String response = cn.hutool.http.HttpUtil.createGet("https://api.pexels.com/v1/search")
                     .addHeaders(headers)
@@ -288,17 +325,25 @@ public class RecommendationServiceImpl implements RecommendationService {
             JSONArray photos = jsonResponse.getJSONArray("photos");
 
             if (photos != null && !photos.isEmpty()) {
-                JSONObject photo = photos.getJSONObject(0);
-                JSONObject src = photo.getJSONObject("src");
-                return src.getStr("large");
+                int start = Math.abs(Objects.hash(selectionSeed, query)) % photos.size();
+                for (int i = 0; i < photos.size(); i++) {
+                    int idx = (start + i) % photos.size();
+                    JSONObject photo = photos.getJSONObject(idx);
+                    JSONObject src = photo.getJSONObject("src");
+                    String imageUrl = src == null ? null : src.getStr("large");
+                    if (StrUtil.isBlank(imageUrl)) {
+                        continue;
+                    }
+                    if (usedImageUrls.contains(imageUrl)) {
+                        continue;
+                    }
+                    return imageUrl;
+                }
             }
         } catch (Exception e) {
-            log.error("搜索图片失败: {}", location, e);
+            log.error("搜索图片失败: {}", query, e);
         }
-
-        // 失败时返回稳定的占位图
-        int seed = Math.abs((location + title).hashCode());
-        return String.format("https://picsum.photos/seed/%d/800/600", seed);
+        return null;
     }
 
     /**
@@ -376,7 +421,7 @@ public class RecommendationServiceImpl implements RecommendationService {
      * 根据用户位置获取附近热门景点推荐
      */
     @Override
-    @Cacheable(value = "nearbyRecommendations", key = "#userLocation")
+    @Cacheable(value = "nearbyRecommendations", key = "'v2:' + #userLocation")
     public RecommendationPageVO getNearbyRecommendations(String userLocation) {
         long startTime = System.currentTimeMillis();
 
@@ -389,6 +434,15 @@ public class RecommendationServiceImpl implements RecommendationService {
 
             // 使用 AI 生成该位置附近的热门景点推荐
             List<Recommendation> recommendations = generateNearbyRecommendations(userLocation);
+
+            if (!recommendations.isEmpty()) {
+                // 先计算分数并尝试入库，确保接口返回可用的持久化 id
+                calculateScores(recommendations);
+                upsertRecommendations(recommendations);
+            }
+
+            // 双保险：极端情况下入库失败或未回填 id，仍保证前端拿到非空 id
+            ensureRecommendationIds(recommendations, userLocation);
 
             // 转换为 VO
             List<RecommendationVO> voList = recommendations.stream()
@@ -463,6 +517,18 @@ public class RecommendationServiceImpl implements RecommendationService {
             vo.setTags(new ArrayList<>());
         }
         return vo;
+    }
+
+    private void ensureRecommendationIds(List<Recommendation> recommendations, String userLocation) {
+        for (int i = 0; i < recommendations.size(); i++) {
+            Recommendation rec = recommendations.get(i);
+            if (rec.getId() != null) {
+                continue;
+            }
+            long fallbackId = Math.abs(Objects.hash(userLocation, rec.getTitle(), rec.getLocation(), i));
+            // 避免 0 值并保持正数
+            rec.setId(fallbackId == 0 ? (long) (i + 1) : fallbackId);
+        }
     }
 
     /**

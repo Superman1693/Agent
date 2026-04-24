@@ -3,6 +3,7 @@ package com.ahead.aiagent.service.impl;
 import com.ahead.aiagent.common.ErrorCode;
 import com.ahead.aiagent.exception.BusinessException;
 import com.ahead.aiagent.mapper.UserMapper;
+import com.ahead.aiagent.model.dto.PasswordResetRequest;
 import com.ahead.aiagent.model.dto.UserLoginRequest;
 import com.ahead.aiagent.model.dto.UserRegisterRequest;
 import com.ahead.aiagent.model.dto.UserUpdateRequest;
@@ -25,6 +26,11 @@ public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
     private final JwtUtils jwtUtils;
 
+    /**
+     * 注册
+     * @param request
+     * @return
+     */
     @Override
     public Long register(UserRegisterRequest request) {
         Long count = userMapper.selectCount(
@@ -42,6 +48,11 @@ public class UserServiceImpl implements UserService {
         return user.getId();
     }
 
+    /**
+     * 登录
+     * @param request
+     * @return
+     */
     @Override
     public LoginVO login(UserLoginRequest request) {
         User user = userMapper.selectOne(
@@ -73,6 +84,12 @@ public class UserServiceImpl implements UserService {
         return toVO(user);
     }
 
+    /**
+     * 修改用户信息
+     * @param userId
+     * @param request
+     * @return
+     */
     @Override
     public UserVO updateInfo(Long userId, UserUpdateRequest request) {
         // 修改密码：需要验证旧密码
@@ -96,7 +113,46 @@ public class UserServiceImpl implements UserService {
         userMapper.update(null, wrapper);
         return getUserInfo(userId);
     }
+    /**
+     * 重置密码
+     * @param request
+     * @return
+     */
+    @Override
+    public UserVO resetPassword(PasswordResetRequest request) {
+        boolean hasUsername = StringUtils.hasText(request.getUsername());
+        boolean hasEmail = StringUtils.hasText(request.getEmail());
+        if (!hasUsername && !hasEmail) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "请填写用户名或邮箱中的至少一项");
+        }
 
+        LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<User>();
+        if (hasUsername) {
+            wrapper.eq(User::getUsername, request.getUsername().trim());
+        }
+        if (hasEmail) {
+            wrapper.eq(User::getEmail, request.getEmail().trim());
+        }
+
+        User user = userMapper.selectOne(wrapper);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "未找到匹配的用户，请检查用户名或邮箱");
+        }
+
+        userMapper.update(null,
+                new LambdaUpdateWrapper<User>()
+                        .eq(User::getId, user.getId())
+                        .set(User::getPassword, PasswordUtils.encode(request.getNewPassword())));
+
+        return getUserInfo(user.getId());
+    }
+
+    /**
+     * 修改头像
+     * @param userId
+     * @param avatarUrl
+     * @return
+     */
     @Override
     public UserVO updateAvatar(Long userId, String avatarUrl) {
         userMapper.update(null,

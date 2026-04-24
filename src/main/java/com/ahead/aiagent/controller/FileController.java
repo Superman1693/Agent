@@ -63,11 +63,27 @@ public class FileController {
             outputStream.flush();
         };
 
+        MediaType mediaType = resolveMediaType(meta.fileName());
+
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_PDF)
+                .contentType(mediaType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encodedFilename)
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .contentLength(meta.size())
                 .body(stream);
+    }
+
+    private MediaType resolveMediaType(String fileName) {
+        if (fileName == null) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        String lower = fileName.toLowerCase();
+        if (lower.endsWith(".pdf")) {
+            return MediaType.APPLICATION_PDF;
+        }
+        if (lower.endsWith(".txt")) {
+            return new MediaType("text", "plain", StandardCharsets.UTF_8);
+        }
+        return MediaType.APPLICATION_OCTET_STREAM;
     }
 }

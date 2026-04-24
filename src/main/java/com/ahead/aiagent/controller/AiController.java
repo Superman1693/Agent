@@ -41,7 +41,8 @@ import java.util.regex.Pattern;
 public class AiController {
 
     private static final Pattern TOOL_RESULT_PATTERN = Pattern.compile("工具\\s+([^\\s]+)\\s+完成了它的任务！结果:\\s*(.*)");
-    private static final Pattern ARTIFACT_ID_PATTERN = Pattern.compile("artifactId\\s*[:=]\\s*\"?([A-Za-z0-9_-]+)\"?");
+    private static final Pattern ARTIFACT_ID_PATTERN = Pattern.compile(
+            "(?i)(?:txt)?artifactid\\s*[:=]\\s*\"?([A-Za-z0-9_-]+)\"?");
 
     @Resource
     private TravelApp travelApp;
@@ -208,7 +209,9 @@ public class AiController {
 
     private String buildChineseConstrainedPrompt(String message) {
         return "请始终使用简体中文回复。"
-                + "如果用户明确要求生成 PDF，必须调用生成 PDF 工具，并在结果中保留 artifactId 以便系统返回下载链接。"
+                + "当用户提出行程规划/路线安排/旅游计划（如半日游、一日游、多日游）时，即使未显式提到 PDF，也应默认调用 generatePDF 生成可下载行程单。"
+                + "若用户只是问候、闲聊、问答、解释概念，禁止调用 generatePDF。"
+                + "若已调用 generatePDF，结果中保留 artifactId 与 txtArtifactId 以便系统返回下载链接。"
                 + "禁止输出超长原始 HTML 或大段 JSON，优先给出简洁中文摘要。"
                 + "\n用户原始需求：" + message;
     }
@@ -279,17 +282,32 @@ public class AiController {
             }
             fileArtifactService.bindOwner(artifactId, userId);
             fileArtifactService.getArtifact(artifactId).ifPresent(meta -> {
+                String mimeType = resolveMimeType(meta.fileName());
                 Map<String, Object> artifactData = new LinkedHashMap<>();
                 artifactData.put("artifactId", meta.artifactId());
                 artifactData.put("fileId", meta.artifactId());
                 artifactData.put("name", meta.fileName());
-                artifactData.put("mimeType", "application/pdf");
+                artifactData.put("mimeType", mimeType);
                 artifactData.put("size", meta.size());
                 artifactData.put("downloadUrl", buildDownloadUrl(meta.artifactId(), meta.downloadToken()));
                 artifactData.put("expiresAt", meta.expireAt().toString());
                 sendEvent(sseEmitter, "artifact", runId, step, artifactData);
             });
         }
+    }
+
+    private String resolveMimeType(String fileName) {
+        if (fileName == null) {
+            return "application/octet-stream";
+        }
+        String lower = fileName.toLowerCase();
+        if (lower.endsWith(".pdf")) {
+            return "application/pdf";
+        }
+        if (lower.endsWith(".txt")) {
+            return "text/plain; charset=UTF-8";
+        }
+        return "application/octet-stream";
     }
 
     private String buildDownloadUrl(String artifactId, String token) {

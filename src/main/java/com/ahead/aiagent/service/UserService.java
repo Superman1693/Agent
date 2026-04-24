@@ -1,11 +1,13 @@
 package com.ahead.aiagent.service;
 
+import com.ahead.aiagent.model.dto.PasswordResetRequest;
 import com.ahead.aiagent.model.dto.UserLoginRequest;
 import com.ahead.aiagent.model.dto.UserRegisterRequest;
 import com.ahead.aiagent.model.dto.UserUpdateRequest;
 import com.ahead.aiagent.model.entity.User;
 import com.ahead.aiagent.model.vo.LoginVO;
 import com.ahead.aiagent.model.vo.UserVO;
+import jakarta.validation.Valid;
 
 public interface UserService {
 
@@ -20,4 +22,6 @@ public interface UserService {
     UserVO updateInfo(Long userId, UserUpdateRequest request);
 
     UserVO updateAvatar(Long userId, String avatarUrl);
+
+    UserVO resetPassword( PasswordResetRequest request);
 }

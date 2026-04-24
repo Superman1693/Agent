@@ -88,6 +88,8 @@ public class ToolCallAgent extends  ReActAgent{
             if(toolcallList.isEmpty()){
                 //不调用工具时需要手动记录助手消息
                 getMessageList().add(assistantMessage);
+                // 无工具调用通常意味着当前任务已可直接回答，避免继续空转到最大步数
+                setState(AgentState.FINISHED);
                 return false;
             }else {
                 //需要调用工具，需要记录助手消息

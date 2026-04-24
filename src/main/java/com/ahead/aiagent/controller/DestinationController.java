@@ -8,6 +8,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -26,9 +28,17 @@ public class DestinationController {
 
     @Operation(summary = "获取本周精选目的地")
     @GetMapping("/featured")
-    public BaseResponse<List<DestinationVO>> getFeaturedDestinations() {
-        List<DestinationVO> destinations = destinationService.getFeaturedDestinations();
+    public BaseResponse<List<DestinationVO>> getFeaturedDestinations(
+            @RequestParam(required = false) Integer limit) {
+        List<DestinationVO> destinations = destinationService.getFeaturedDestinations(limit);
         return ResultUtils.success(destinations);
+    }
+
+    @Operation(summary = "获取目的地详情")
+    @GetMapping("/{id}")
+    public BaseResponse<DestinationVO> getDestinationDetail(@PathVariable Long id) {
+        DestinationVO destination = destinationService.getDestinationDetail(id);
+        return ResultUtils.success(destination);
     }
 
     @Operation(summary = "手动刷新精选目的地（测试用）")

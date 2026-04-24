@@ -2,7 +2,7 @@ spring:
   application:
     name: ai-agent
   profiles:
-    active: local  # 激活 local 环境
+    active: prod  # 激活 local 环境
   ai:
     vectorstore:
       pgvector:

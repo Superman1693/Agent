@@ -6,6 +6,8 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.ahead.aiagent.mapper.DestinationMapper;
+import com.ahead.aiagent.common.ErrorCode;
+import com.ahead.aiagent.exception.BusinessException;
 import com.ahead.aiagent.model.entity.Destination;
 import com.ahead.aiagent.model.vo.DestinationVO;
 import com.ahead.aiagent.service.DestinationService;
@@ -40,18 +42,29 @@ public class DestinationServiceImpl implements DestinationService {
     private static final int TOP_N = 3;
 
     @Override
-    public List<DestinationVO> getFeaturedDestinations() {
-        // 查询启用的目的地，按分数降序，取前3条
+    public List<DestinationVO> getFeaturedDestinations(Integer limit) {
+        int actualLimit = (limit == null || limit < 1) ? TOP_N : Math.min(limit, 50);
+
+        // 查询启用的目的地，按分数降序
         LambdaQueryWrapper<Destination> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(Destination::getIsActive, 1)
                 .orderByDesc(Destination::getScore)
-                .last("LIMIT " + TOP_N);
+                .last("LIMIT " + actualLimit);
 
         List<Destination> destinations = destinationMapper.selectList(wrapper);
 
         return destinations.stream()
-                .map(dest -> BeanUtil.copyProperties(dest, DestinationVO.class))
+                .map(this::convertToVO)
                 .collect(Collectors.toList());
+    }
+
+    @Override
+    public DestinationVO getDestinationDetail(Long id) {
+        Destination destination = destinationMapper.selectById(id);
+        if (destination == null || !Objects.equals(destination.getIsActive(), 1)) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "目的地不存在");
+        }
+        return convertToVO(destination);
     }
 
     @Override
@@ -332,5 +345,41 @@ public class DestinationServiceImpl implements DestinationService {
         if (!destinations.isEmpty() && destinations.stream().anyMatch(d -> d.getId() != null)) {
             destinationMapper.update(null, updateWrapper);
         }
+    }
+
+    private DestinationVO convertToVO(Destination destination) {
+        DestinationVO vo = BeanUtil.copyProperties(destination, DestinationVO.class);
+
+        // 前端详情页需要 tags / highlights，这里做兼容兜底
+        List<String> tags = new ArrayList<>();
+        if (StrUtil.isNotBlank(destination.getTag())) {
+            tags.add(destination.getTag());
+        }
+        if (StrUtil.isNotBlank(destination.getCountry())) {
+            tags.add(destination.getCountry());
+        }
+        vo.setTags(tags);
+
+        DestinationVO.HighlightVO highlight1 = new DestinationVO.HighlightVO();
+        highlight1.setIcon("landscape");
+        highlight1.setTitle("目的地亮点");
+        highlight1.setDescription(StrUtil.blankToDefault(destination.getDescription(), "探索当地风景与文化体验"));
+
+        DestinationVO.HighlightVO highlight2 = new DestinationVO.HighlightVO();
+        highlight2.setIcon("schedule");
+        highlight2.setTitle("建议时长");
+        highlight2.setDescription(StrUtil.blankToDefault(destination.getDuration(), "建议灵活安排行程"));
+
+        DestinationVO.HighlightVO highlight3 = new DestinationVO.HighlightVO();
+        highlight3.setIcon("payments");
+        highlight3.setTitle("参考预算");
+        String budgetText = destination.getPrice() == null
+                ? "预算待确认"
+                : "人均约 ¥" + destination.getPrice().toPlainString();
+        highlight3.setDescription(budgetText);
+
+        vo.setHighlights(List.of(highlight1, highlight2, highlight3));
+
+        return vo;
     }
 }

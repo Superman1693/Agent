@@ -38,6 +38,21 @@ public class Destination {
 
     private Integer isActive;
 
+    // 详情字段
+    private BigDecimal rating;
+
+    private Integer reviewCount;
+
+    private String duration;
+
+    private Integer groupSize;
+
+    private String difficulty;
+
+    private BigDecimal price;
+
+    private String location;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;

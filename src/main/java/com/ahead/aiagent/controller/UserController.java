@@ -4,6 +4,7 @@ import com.ahead.aiagent.common.BaseResponse;
 import com.ahead.aiagent.common.ErrorCode;
 import com.ahead.aiagent.common.ResultUtils;
 import com.ahead.aiagent.exception.BusinessException;
+import com.ahead.aiagent.model.dto.PasswordResetRequest;
 import com.ahead.aiagent.model.dto.UserLoginRequest;
 import com.ahead.aiagent.model.dto.UserRegisterRequest;
 import com.ahead.aiagent.model.dto.UserUpdateRequest;
@@ -43,6 +44,11 @@ public class UserController {
     @GetMapping("/me")
     public BaseResponse<UserVO> me() {
         return ResultUtils.success(userService.getUserInfo(AuthContext.getUserId()));
+    }
+    /** 找回密码 */
+    @PostMapping("/reset-password")
+    public BaseResponse<UserVO> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
+        return ResultUtils.success(userService.resetPassword(request));
     }
 
     /** 修改用户信息：邮箱 / 密码（需认证） */

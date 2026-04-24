@@ -1,12 +1,14 @@
 ##CUSTOM###
 application-local.yml
+application-prod.yml
+mcp-server.json
 tmp
 HELP.md
 target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
-
+*Test.java
 ### STS ###
 .apt_generated
 .classpath

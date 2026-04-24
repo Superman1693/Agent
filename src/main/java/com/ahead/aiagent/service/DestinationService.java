@@ -10,9 +10,14 @@ import java.util.List;
 public interface DestinationService {
 
     /**
-     * 获取精选目的地列表（Top 3）
+     * 获取精选目的地列表
      */
-    List<DestinationVO> getFeaturedDestinations();
+    List<DestinationVO> getFeaturedDestinations(Integer limit);
+
+    /**
+     * 获取目的地详情
+     */
+    DestinationVO getDestinationDetail(Long id);
 
     /**
      * 刷新精选目的地数据（定时任务调用）
