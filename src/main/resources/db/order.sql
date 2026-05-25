@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS travel_order (
+    id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id        BIGINT       NOT NULL COMMENT '用户ID',
+    order_no       VARCHAR(40)  NOT NULL COMMENT '订单号',
+    product_id     BIGINT       NOT NULL COMMENT '商品ID',
+    product_type   VARCHAR(20)  NOT NULL COMMENT '商品类型: destination/package',
+    product_name   VARCHAR(200) NOT NULL COMMENT '商品名称',
+    product_image  VARCHAR(512) COMMENT '商品封面',
+    total_amount   DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '订单金额',
+    travelers      INT          NOT NULL COMMENT '出行人数',
+    start_date     DATE         NOT NULL COMMENT '出发日期',
+    contact_name   VARCHAR(64)  NOT NULL COMMENT '联系人',
+    contact_phone  VARCHAR(32)  NOT NULL COMMENT '联系电话',
+    status         VARCHAR(30)  NOT NULL DEFAULT 'pending_payment' COMMENT '状态: pending_payment/pending_travel/completed/refund',
+    cancel_reason  VARCHAR(200) COMMENT '取消原因',
+    create_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_order_no (order_no),
+    INDEX idx_order_user (user_id, create_time DESC),
+    INDEX idx_order_status (status),
+    INDEX idx_order_product (product_type, product_id),
+    CONSTRAINT chk_order_travelers CHECK (travelers >= 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单表';

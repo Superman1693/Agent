@@ -23,7 +23,7 @@ public class TravelAppDocumentLoader {
     }
 
     /*
-     * 加载所有markdown文档
+     * 加载所有markdown文档，并转换为document列表
      */
     public List<Document> loadMarkdowns() {
         List<Document> allDocuments = new ArrayList<>();

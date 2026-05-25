@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import java.util.List;
 
 /**
- * 旅行大师向量数据库配置（基于初始化内存的向量数据库Bean）
+ * 旅行大师向量数据库配置（基于初始化内存的向量数据库Bean）并保存文档
  */
 
 @Configuration
@@ -31,7 +31,7 @@ public class TravelAppVectorStoreConfig {
         SimpleVectorStore simpleVectorStore =SimpleVectorStore.builder(dashscopeEmbeddingModel).build();
         //加载文档
         List<Document> documentList=travelAppDocumentLoader.loadMarkdowns();
-        //自主切分文档--不建议采取自主切分，建议使用自主切分的方式
+        //自主切分文档--不建议采取自主切分，建议使用自动切分的方式
         //List< Document> splitDocuments = myTokenTextSplitter.splitCustomized(documentList);
         //List<Document> splitDocuments = myTokenTextSplitter.splitDocuments(documentList);
         List<Document> enrichedDocuments = myKeywordEnricher.enrichDocuments(documentList);

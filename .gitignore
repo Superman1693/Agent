@@ -4,11 +4,40 @@ application-prod.yml
 mcp-server.json
 tmp
 HELP.md
+
+### 敏感文件 ###
+*.env
+.env*
+*.key
+*.pem
+*.p12
+*.jks
+*.keystore
+**/secrets/
+**/credentials/
+application-secret*.yml
+application-secret*.yaml
+application-secret*.properties
+*-secret.yml
+*-secret.yaml
+*-secret.properties
+
+### 日志文件 ###
+*.log
+logs/
+log/
+
+### 临时文件 ###
+*.tmp
+*.bak
+*.swp
+*~
 target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
 *Test.java
+
 ### STS ###
 .apt_generated
 .classpath
@@ -36,3 +65,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 本地历史 ###
+.history/
+tmp-deps/

@@ -68,7 +68,7 @@ public class TravelApp {
         }
 
         /**
-         * AI基础对话，SSE流失传世
+         * AI基础对话，SSE流失输出
          * 
          * @param message
          * @param chatId
@@ -146,7 +146,7 @@ public class TravelApp {
                                 // 开启日志，便于观察效果
                                 // .advisors(new MySimpleLoggerAdvisor())
                                 // 注意：由于新版强制使用 Builder 模式，如果你后续放开下面这行注释，也需写成 builder()
-                                // 应用RAG知识库问答
+                                // 应用RAG知识库问答，问答拦截器
                                 // QuestionAnswerAdvisor.builder(travelAppVectorStore).build()
                                 // 应用RAG索引增强服务
                                 // travelAppRagCloudAdvisor
