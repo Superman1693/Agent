@@ -50,4 +50,49 @@ public class AgentExecutorConfig {
                 e -> e.getThreadPoolExecutor().getPoolSize()).register(meterRegistry);
         return executor;
     }
+
+    /**
+     * 修复 O1（隔离）：目的地/推荐定时刷新专用线程池。
+     *
+     * <p>刷新任务含外部 HTTP（搜索/LLM/图片）且可并行多个关键词，此前与 Agent SSE 共用
+     * {@code agentTaskExecutor}，高峰期会互相挤占队列导致 SSE 任务排队延迟。</p>
+     *
+     * <p>容量刻意小于 Agent 池（core 2 / max 4 / 队列 8），配合 CallerRuns：
+     * 队列满时由定时任务线程自己执行，天然反压，不会堆积过多外部 HTTP 调用。</p>
+     */
+    @Bean(name = "refreshTaskExecutor", destroyMethod = "shutdown")
+    public ThreadPoolTaskExecutor refreshTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(8);
+        executor.setThreadNamePrefix("refresh-");
+        executor.setKeepAliveSeconds(60);
+        // 优雅停机：等待在途刷新任务完成
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(30);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.initialize();
+        return executor;
+    }
+
+    /**
+     * 修复 O1（隔离）：Agent 过程回溯（trace）异步落库专用小线程池。
+     *
+     * <p>与刷新池分开的原因：落库是纯 JDBC 小写入（毫秒级），而刷新任务含长外部 HTTP；
+     * 混用会让 trace 写入排在刷新后面、SSE 过程数据延迟可见。拒绝策略用 Discard：
+     * trace 属可丢弃的观测数据，宁可丢一条也不阻塞/反压 SSE 主链路（落库失败本就有自动熔断）。</p>
+     */
+    @Bean(name = "traceTaskExecutor", destroyMethod = "shutdown")
+    public ThreadPoolTaskExecutor traceTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("trace-");
+        executor.setKeepAliveSeconds(60);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+        executor.initialize();
+        return executor;
+    }
 }

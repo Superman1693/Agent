@@ -110,6 +110,11 @@ pexels:
 
 # CORS 允许来源（安全修复 E17/D4）
 app:
+  # 安全修复 E19/D6：找回密码邮件本地开发降级开关。
+  # SMTP 未配置（MAIL_HOST 为空）且本开关为 true 时，验证码不发送邮件、仅以 warn 日志输出，
+  # 方便本地联调；生产环境必须保持 false（默认值），避免验证码泄露到日志。
+  mail:
+    dev-log-code: ${MAIL_DEV_LOG_CODE:false}
   # 修复 O1：Agent/SSE 专用线程池参数（替代 ForkJoinPool.commonPool）
   agent:
     executor:

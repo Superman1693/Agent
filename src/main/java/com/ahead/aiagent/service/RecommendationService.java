@@ -2,6 +2,7 @@ package com.ahead.aiagent.service;
 
 import com.ahead.aiagent.model.dto.RecommendationQueryRequest;
 import com.ahead.aiagent.model.vo.RecommendationPageVO;
+import com.ahead.aiagent.model.vo.RecommendationVO;
 
 /**
  * 热门推荐服务接口
@@ -23,6 +24,14 @@ public interface RecommendationService {
      * @return 推荐列表
      */
     RecommendationPageVO getNearbyRecommendations(String userLocation);
+
+    /**
+     * 修复 E23：查询单条推荐详情（含 dataSource 字段）
+     *
+     * @param id 推荐 id
+     * @return 推荐 VO（id 无效或未启用时抛 NOT_FOUND_ERROR）
+     */
+    RecommendationVO getRecommendationDetail(Long id);
 
     /**
      * 刷新热门推荐数据（定时任务调用）

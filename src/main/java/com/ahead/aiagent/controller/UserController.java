@@ -4,9 +4,9 @@ import com.ahead.aiagent.common.BaseResponse;
 import com.ahead.aiagent.common.ErrorCode;
 import com.ahead.aiagent.common.ResultUtils;
 import com.ahead.aiagent.exception.BusinessException;
+import com.ahead.aiagent.model.dto.PasswordResetCodeRequest;
 import com.ahead.aiagent.model.dto.PasswordResetRequest;
 import com.ahead.aiagent.model.dto.UserLoginRequest;
-import com.ahead.aiagent.model.dto.PasswordResetRequest;
 import com.ahead.aiagent.model.dto.UserRegisterRequest;
 import com.ahead.aiagent.model.dto.UserUpdateRequest;
 import com.ahead.aiagent.model.vo.LoginVO;
@@ -19,6 +19,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
 @RequestMapping("/user")
@@ -41,7 +43,15 @@ public class UserController {
         return ResultUtils.success(userService.login(request));
     }
 
-    /** 找回密码（无需认证） */
+    /** 发送找回密码验证码（无需认证；安全修复 E19/D6） */
+    @PostMapping("/send-code")
+    public BaseResponse<Void> sendCode(@Valid @RequestBody PasswordResetCodeRequest request,
+                                       HttpServletRequest httpRequest) {
+        userService.sendCode(request, resolveClientIp(httpRequest));
+        return ResultUtils.success(null);
+    }
+
+    /** 找回密码：需携带邮箱验证码（无需认证；安全修复 E19/D6） */
     @PostMapping("/reset-password")
     public BaseResponse<UserVO> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
         return ResultUtils.success(userService.resetPassword(request));
@@ -51,11 +61,6 @@ public class UserController {
     @GetMapping("/me")
     public BaseResponse<UserVO> me() {
         return ResultUtils.success(userService.getUserInfo(AuthContext.getUserId()));
-    }
-    /** 找回密码 */
-    @PostMapping("/reset-password")
-    public BaseResponse<UserVO> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
-        return ResultUtils.success(userService.resetPassword(request));
     }
 
     /** 修改用户信息：邮箱 / 密码（需认证） */
@@ -77,5 +82,14 @@ public class UserController {
         log.info("用户 {} 上传头像, originalName={}", userId, file.getOriginalFilename());
         String url = ossOperator.upload(file, "avatar/");
         return ResultUtils.success(userService.updateAvatar(userId, url));
+    }
+
+    /** 提取调用方真实 IP（优先 X-Forwarded-For 首段，回退 remoteAddr），用于验证码发送限流 */
+    private String resolveClientIp(HttpServletRequest request) {
+        String ip = request.getHeader("X-Forwarded-For");
+        if (ip != null && ip.contains(",")) {
+            ip = ip.substring(0, ip.indexOf(',')).trim();
+        }
+        return (ip == null || ip.isEmpty()) ? request.getRemoteAddr() : ip;
     }
 }

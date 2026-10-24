@@ -80,10 +80,16 @@ public class FileController {
         FileArtifactService.ArtifactMeta meta = fileArtifactService.getArtifact(fileId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND_ERROR, "文件不存在或已过期"));
 
+        // 修复：ownerUserId 为 null 的产物此前任何登录用户都能下载（归属校验被跳过）。
+        // 现规则：无有效 downloadToken 时，必须由归属人本人下载；owner 未知（null）一律拒绝，
+        // 只能通过生成时下发的带 token 下载链接访问。
         boolean tokenValid = fileArtifactService.validateDownloadToken(fileId, token);
         if (!tokenValid) {
             Long currentUserId = AuthContext.getUserId();
-            if (meta.ownerUserId() != null && !meta.ownerUserId().equals(currentUserId)) {
+            if (meta.ownerUserId() == null) {
+                throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "该文件归属未知，请通过带 token 的下载链接获取");
+            }
+            if (!meta.ownerUserId().equals(currentUserId)) {
                 throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限下载此文件");
             }
         }

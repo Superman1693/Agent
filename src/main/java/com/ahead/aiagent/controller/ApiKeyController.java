@@ -49,7 +49,8 @@ public class ApiKeyController {
         ApiKeyVO vo = new ApiKeyVO();
         vo.setId(key.getId());
         vo.setName(key.getName());
-        vo.setMaskedKey(maskKey(key.getApiKey()));
+        // 安全修复 E21/D7：库里只存哈希，掩码改由 apiKeyPrefix（明文前 10 位）生成
+        vo.setMaskedKey(maskKey(key.getApiKeyPrefix()));
         vo.setTotalQuota(key.getTotalQuota());
         vo.setUsedQuota(key.getUsedQuota());
         vo.setStatus(key.getStatus());
@@ -57,10 +58,10 @@ public class ApiKeyController {
         return vo;
     }
 
-    private static String maskKey(String apiKey) {
-        if (apiKey == null || apiKey.length() <= 8) {
+    private static String maskKey(String prefix) {
+        if (prefix == null || prefix.isEmpty()) {
             return "****";
         }
-        return apiKey.substring(0, 4) + "****" + apiKey.substring(apiKey.length() - 4);
+        return prefix + "****";
     }
 }

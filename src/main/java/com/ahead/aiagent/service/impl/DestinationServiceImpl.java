@@ -26,7 +26,8 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -46,6 +47,8 @@ public class DestinationServiceImpl implements DestinationService {
     private final DestinationMapper destinationMapper;
     private final ChatClient.Builder chatClientBuilder;
     private final WebSearchTool webSearchTool;
+    /** 性能修复：仅用于包裹最后的批量落库段（短事务），替代原方法级 @Transactional 长事务 */
+    private final PlatformTransactionManager transactionManager;
 
     private static final String[] TAG_COLORS = { "primary", "secondary", "tertiary" };
     private static final int TOP_N = 3;
@@ -70,8 +73,8 @@ public class DestinationServiceImpl implements DestinationService {
     @Value("${app.refresh.parallel-enabled:true}")
     private boolean refreshParallelEnabled;
 
-    /** 修复 O9：并行检索复用的专用线程池（复用 Agent 线程池，避免额外创建） */
-    @Resource(name = "agentTaskExecutor")
+    /** 修复 O9 + O1（隔离）：并行检索改用独立 refreshTaskExecutor，不再与 Agent SSE 共用线程池 */
+    @Resource(name = "refreshTaskExecutor")
     private Executor refreshExecutor;
 
     @Override
@@ -101,7 +104,6 @@ public class DestinationServiceImpl implements DestinationService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void refreshDestinations() {
         log.info("开始刷新精选目的地数据...");
 
@@ -120,8 +122,10 @@ public class DestinationServiceImpl implements DestinationService {
             // 3. 打分排序，选择 Top 3
             List<Destination> top3 = selectTop3(cleaned);
 
-            // 4. Upsert 入库
-            upsertDestinations(top3);
+            // 性能修复：收窄事务范围——搜索/LLM/图片等长外部 HTTP 调用留在事务外，
+            // 仅最后的批量落库段用 TransactionTemplate 包短事务（失败整体回滚，语义与原 @Transactional 一致）
+            TransactionTemplate txTemplate = new TransactionTemplate(transactionManager);
+            txTemplate.executeWithoutResult(status -> upsertDestinations(top3));
 
             log.info("精选目的地刷新完成，共更新 {} 条数据", top3.size());
 

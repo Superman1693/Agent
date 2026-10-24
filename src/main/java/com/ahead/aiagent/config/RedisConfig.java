@@ -3,7 +3,8 @@ package com.ahead.aiagent.config;
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.jsontype.impl.LaissezFaireSubTypeValidator;
+import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
+import com.fasterxml.jackson.databind.jsontype.PolymorphicTypeValidator;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean;
@@ -53,9 +54,23 @@ public class RedisConfig {
         // 使用 Jackson2JsonRedisSerializer 来序列化和反序列化 redis 的 value 值
         Jackson2JsonRedisSerializer<Object> serializer = new Jackson2JsonRedisSerializer<>(Object.class);
 
+        // 安全修复：替换 LaissezFaireSubTypeValidator（放行任意类型，反序列化恶意 payload 可实例化任意类），
+        // 改为按前缀白名单：仅允许本项目 VO 与 JDK 常用集合/时间/基础类型。
+        // 覆盖现有缓存值：hotRecommendations / nearbyRecommendations 缓存的 RecommendationPageVO
+        // （内含 RecommendationVO 的 BigDecimal / ArrayList / String 字段），故需放行 java.math.
+        PolymorphicTypeValidator typeValidator = BasicPolymorphicTypeValidator.builder()
+                .allowIfBaseType(Object.class)
+                .allowIfSubType("com.ahead.aiagent.")
+                .allowIfSubType("java.util.")
+                .allowIfSubType("java.time.")
+                .allowIfSubType("java.lang.")
+                .allowIfSubType("java.math.")
+                .build();
+
         ObjectMapper mapper = new ObjectMapper();
         mapper.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
-        mapper.activateDefaultTyping(LaissezFaireSubTypeValidator.instance, ObjectMapper.DefaultTyping.NON_FINAL);
+        // 保留 NON_FINAL typing（含类型信息才能还原具体 VO），但子类型校验收窄为上面的白名单
+        mapper.activateDefaultTyping(typeValidator, ObjectMapper.DefaultTyping.NON_FINAL);
         serializer.setObjectMapper(mapper);
 
         // 配置序列化

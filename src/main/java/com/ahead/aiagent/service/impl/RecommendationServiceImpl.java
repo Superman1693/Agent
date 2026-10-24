@@ -5,6 +5,8 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import com.ahead.aiagent.common.ErrorCode;
+import com.ahead.aiagent.exception.BusinessException;
 import com.ahead.aiagent.mapper.RecommendationMapper;
 import com.ahead.aiagent.model.dto.RecommendationQueryRequest;
 import com.ahead.aiagent.model.entity.Recommendation;
@@ -74,8 +76,8 @@ public class RecommendationServiceImpl implements RecommendationService {
     @Value("${app.refresh.parallel-enabled:true}")
     private boolean refreshParallelEnabled;
 
-    /** 修复 O9：并行检索复用的专用线程池 */
-    @Resource(name = "agentTaskExecutor")
+    /** 修复 O9 + O1（隔离）：并行检索改用独立 refreshTaskExecutor，不再与 Agent SSE 共用线程池 */
+    @Resource(name = "refreshTaskExecutor")
     private Executor refreshExecutor;
 
     @Override
@@ -476,6 +478,18 @@ public class RecommendationServiceImpl implements RecommendationService {
                 }
             }
         }
+    }
+
+    /**
+     * 修复 E23：查询单条推荐详情（写法参照 DestinationServiceImpl#getDestinationDetail）
+     */
+    @Override
+    public RecommendationVO getRecommendationDetail(Long id) {
+        Recommendation rec = recommendationMapper.selectById(id);
+        if (rec == null || !Integer.valueOf(1).equals(rec.getIsActive())) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "推荐不存在");
+        }
+        return convertToVO(rec);
     }
 
     /**

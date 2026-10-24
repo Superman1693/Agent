@@ -14,11 +14,14 @@ import com.ahead.aiagent.model.vo.CreateOrderVO;
 import com.ahead.aiagent.model.vo.OrderDetailVO;
 import com.ahead.aiagent.model.vo.OrderListVO;
 import com.ahead.aiagent.model.vo.OrderVO;
+import com.ahead.aiagent.service.NotificationService;
 import com.ahead.aiagent.service.OrderService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class OrderServiceImpl implements OrderService {
@@ -40,6 +44,8 @@ public class OrderServiceImpl implements OrderService {
     private final OrderMapper orderMapper;
     private final DestinationMapper destinationMapper;
     private final RecommendationMapper recommendationMapper;
+    /** 修复 O22：订单状态流转时给用户写站内通知 */
+    private final NotificationService notificationService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -52,7 +58,6 @@ public class OrderServiceImpl implements OrderService {
 
         Order order = new Order();
         order.setUserId(userId);
-        order.setOrderNo(generateOrderNo());
         order.setProductId(request.getProductId());
         order.setProductType(request.getProductType());
         order.setProductName(snapshot.productName());
@@ -64,7 +69,23 @@ public class OrderServiceImpl implements OrderService {
         order.setContactPhone(request.getContactPhone());
         order.setStatus("pending_payment");
 
-        orderMapper.insert(order);
+        // 修复：order_no 有唯一键，秒级时间戳+4 位随机位在并发/批量下单时可碰撞导致 insert 直接失败。
+        // 改为：随机位提到 6 位，撞唯一键（DuplicateKeyException）时换号重试，最多 3 次。
+        DuplicateKeyException lastConflict = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            order.setOrderNo(generateOrderNo());
+            try {
+                orderMapper.insert(order);
+                lastConflict = null;
+                break;
+            } catch (DuplicateKeyException e) {
+                lastConflict = e;
+                log.warn("订单号冲突，换号重试（第 {} 次）: {}", attempt, order.getOrderNo());
+            }
+        }
+        if (lastConflict != null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "订单创建失败，请稍后重试");
+        }
 
         CreateOrderVO vo = new CreateOrderVO();
         vo.setOrderId(order.getId());
@@ -131,6 +152,10 @@ public class OrderServiceImpl implements OrderService {
         if (rows == 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "当前订单状态不可取消");
         }
+        // 修复 O22：取消成功后通知用户（内容含订单号）
+        notificationService.notify(userId, "订单已取消",
+                "您的订单 " + order.getOrderNo() + " 已取消" + (StrUtil.isBlank(reason) ? "。" : "，原因：" + reason.trim()),
+                "order");
         return true;
     }
 
@@ -154,6 +179,9 @@ public class OrderServiceImpl implements OrderService {
         if (rows == 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "当前订单状态不可支付");
         }
+        // 修复 O22：支付成功后通知用户（内容含订单号）
+        notificationService.notify(userId, "支付成功",
+                "您的订单 " + order.getOrderNo() + " 已支付成功，祝您旅途愉快！", "order");
         return true;
     }
 
@@ -178,6 +206,9 @@ public class OrderServiceImpl implements OrderService {
         if (rows == 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "当前订单状态暂不支持售后申请");
         }
+        // 修复 O22：售后申请提交后通知用户（内容含订单号）
+        notificationService.notify(userId, "售后申请已提交",
+                "您的订单 " + order.getOrderNo() + " 售后申请已提交，我们将尽快为您处理。", "order");
         return true;
     }
 
@@ -209,8 +240,9 @@ public class OrderServiceImpl implements OrderService {
 
     private String generateOrderNo() {
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        int random = ThreadLocalRandom.current().nextInt(1000, 10000);
-        return "OD" + timestamp + random;
+        // 修复：随机位从 4 位提到 6 位（含前导零），降低并发撞号概率
+        int random = ThreadLocalRandom.current().nextInt(1_000_000);
+        return "OD" + timestamp + String.format("%06d", random);
     }
 
     private OrderVO toOrderVO(Order order) {

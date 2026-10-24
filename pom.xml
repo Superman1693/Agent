@@ -241,6 +241,22 @@
 
     <build>
         <plugins>
+            <!-- 修复：JDK 21 下 Maven 编译器默认不再隐式开启注解处理（需 -proc:full），
+                 不显式配置会导致 Lombok 未生效，出现约 140 个「找不到符号」编译错误 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <proc>full</proc>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

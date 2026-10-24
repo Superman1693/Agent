@@ -23,6 +23,8 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     private final JwtUtils jwtUtils;
     private final ApiKeyService apiKeyService;
+    /** 修复：JWT role 可信度校验需回查用户表（UserServiceImpl 仅依赖 Mapper/工具类，无循环依赖） */
+    private final UserService userService;
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
@@ -60,7 +62,14 @@ public class AuthInterceptor implements HandlerInterceptor {
             String token = authHeader.substring(7);
             Claims claims = jwtUtils.parseToken(token); // 过期/无效会抛 JwtException，由全局异常处理
             Long userId = Long.valueOf(claims.getSubject());
-            String role = claims.get("role", String.class);
+            // 修复：JWT 内的 role 是签发时快照，且 token 有效期内用户可能被禁用/删除。
+            // 以库内实时状态为准：查不到用户或 status != 1 一律视为未登录（PK 查询开销可接受）
+            User user = userService.getById(userId);
+            if (user == null || !Integer.valueOf(1).equals(user.getStatus())) {
+                throw new BusinessException(ErrorCode.NOT_LOGIN, "账号不存在或已被禁用，请重新登录");
+            }
+            // role 优先取库记录，库值为空时回退 token claim
+            String role = StringUtils.hasText(user.getRole()) ? user.getRole() : claims.get("role", String.class);
             AuthContext.set(userId, role);
             return true;
         }

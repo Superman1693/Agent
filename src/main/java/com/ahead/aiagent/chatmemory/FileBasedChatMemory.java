@@ -25,7 +25,13 @@ public class FileBasedChatMemory implements ChatMemory {
     private final String BASE_DIR;
     private final Kryo kryo = new Kryo();
 
-    /** 每个会话一把锁，修复 E12/D15 的读-改-写竞态 */
+    /**
+     * 每个会话一把锁，修复 E12/D15 的读-改-写竞态。
+     * 修复：锁 map 加上限（10000），超限时直接 clear()——锁对象可通过 computeIfAbsent 随时重建，
+     * 清空只是让并发会话短暂失去互斥（退化为串行文件读写），不会丢数据，
+     * 避免会话 id 无界增长把锁 map 撑爆内存。
+     */
+    private static final int MAX_LOCKS = 10_000;
     private final Map<String, Object> conversationLocks = new ConcurrentHashMap<>();
 
     {
@@ -88,6 +94,10 @@ public class FileBasedChatMemory implements ChatMemory {
     }
 
     private Object lockFor(String conversationId) {
+        // 超限兜底：直接清空重建（锁可重建，clear 安全；见字段注释）
+        if (conversationLocks.size() >= MAX_LOCKS) {
+            conversationLocks.clear();
+        }
         return conversationLocks.computeIfAbsent(conversationId, k -> new Object());
     }
 

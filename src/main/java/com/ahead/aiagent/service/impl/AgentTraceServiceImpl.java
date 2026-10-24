@@ -38,8 +38,8 @@ public class AgentTraceServiceImpl implements AgentTraceService {
 
     private final AgentTraceMapper agentTraceMapper;
 
-    /** 复用 Agent 线程池做异步落库 */
-    @Resource(name = "agentTaskExecutor")
+    /** 修复 O1（隔离）：异步落库改用独立 traceTaskExecutor 小池，不再占用 Agent SSE 线程池 */
+    @Resource(name = "traceTaskExecutor")
     private Executor traceExecutor;
 
     /** 默认关闭；执行 db/agent_trace.sql 后置为 true 启用 */

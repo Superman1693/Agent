@@ -6,12 +6,14 @@ import com.ahead.aiagent.common.ResultUtils;
 import com.ahead.aiagent.exception.BusinessException;
 import com.ahead.aiagent.model.dto.RecommendationQueryRequest;
 import com.ahead.aiagent.model.vo.RecommendationPageVO;
+import com.ahead.aiagent.model.vo.RecommendationVO;
 import com.ahead.aiagent.service.RecommendationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -81,5 +83,12 @@ public class RecommendationController {
             log.error("刷新热门推荐失败", e);
             return ResultUtils.error(ErrorCode.SYSTEM_ERROR);
         }
+    }
+
+    // 修复 E23：补齐前端详情页所需的单条查询接口（写法参照 DestinationController GET /{id}）
+    @GetMapping("/{id}")
+    @Operation(summary = "获取推荐单条详情（含 dataSource 字段）")
+    public BaseResponse<RecommendationVO> getRecommendationDetail(@PathVariable Long id) {
+        return ResultUtils.success(recommendationService.getRecommendationDetail(id));
     }
 }

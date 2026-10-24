@@ -16,6 +16,9 @@ public class ApiKey {
 
     private String apiKey;
 
+    /** 安全修复 E21/D7：明文 key 仅创建时展示一次，库里另存前缀用于列表掩码展示 */
+    private String apiKeyPrefix;
+
     private String name;
 
     /** 总配额（调用次数） */

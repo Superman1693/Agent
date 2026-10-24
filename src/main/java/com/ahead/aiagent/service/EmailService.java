@@ -29,12 +29,22 @@ public class EmailService {
     @Value("${app.mail.from:${spring.mail.username:}}")
     private String from;
 
+    /** 修复：本地开发降级开关 —— SMTP 未配置且开关为 true 时，验证码仅打印 warn 日志、不抛异常，方便本地联调 */
+    @Value("${app.mail.dev-log-code:false}")
+    private boolean devLogCode;
+
     public void sendVerificationCode(String to, String code) {
-        if (!StringUtils.hasText(mailHost) || !StringUtils.hasText(from)) {
+        boolean mailConfigured = StringUtils.hasText(mailHost) && StringUtils.hasText(from);
+        JavaMailSender sender = mailSenderProvider.getIfAvailable();
+        // 降级：邮件服务未就绪且开启 dev-log-code 时，验证码输出到日志并正常返回（仅限本地开发使用）
+        if ((!mailConfigured || sender == null) && devLogCode) {
+            log.warn("[DEV] 邮件服务未配置，找回密码验证码降级输出到日志: to={}, code={}", maskEmail(to), code);
+            return;
+        }
+        if (!mailConfigured) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                     "邮件服务未配置，请联系管理员（需设置 MAIL_HOST / MAIL_USERNAME / MAIL_PASSWORD / MAIL_FROM 环境变量）");
         }
-        JavaMailSender sender = mailSenderProvider.getIfAvailable();
         if (sender == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "邮件服务未初始化，请联系管理员");
         }

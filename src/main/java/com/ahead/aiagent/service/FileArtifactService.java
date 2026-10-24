@@ -14,6 +14,11 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
 import java.util.List;
@@ -106,7 +111,17 @@ public class FileArtifactService {
                 arr.add(o);
             }
             FileUtil.mkdir(indexFile.getParentFile());
-            FileUtil.writeUtf8String(arr.toStringPretty(), indexFile);
+            // 修复：先写临时文件，再 Files.move(ATOMIC_MOVE) 原子替换，
+            // 避免进程写到一半崩溃导致 index.json 损坏、重启后索引全部丢失（参照 FileBasedChatMemory 的做法）
+            Path target = indexFile.toPath();
+            Path tmpFile = target.resolveSibling(target.getFileName().toString() + ".tmp");
+            Files.writeString(tmpFile, arr.toStringPretty(), StandardCharsets.UTF_8);
+            try {
+                Files.move(tmpFile, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                // 个别文件系统不支持原子移动时退化为普通替换，仍优于直接写目标文件
+                Files.move(tmpFile, target, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (Exception e) {
             log.error("持久化产物索引失败", e);
         }

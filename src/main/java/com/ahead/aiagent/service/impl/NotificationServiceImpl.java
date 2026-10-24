@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,6 +18,7 @@ import java.util.List;
 /**
  * 消息通知服务实现（修复 E23）
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class NotificationServiceImpl implements NotificationService {
@@ -64,6 +66,27 @@ public class NotificationServiceImpl implements NotificationService {
         }
         notificationMapper.update(null, wrapper);
         return true;
+    }
+
+    @Override
+    public void notify(Long userId, String title, String content, String type) {
+        if (userId == null) {
+            log.warn("notify 跳过：userId 为空, title={}", title);
+            return;
+        }
+        try {
+            Notification notification = new Notification();
+            notification.setUserId(userId);
+            notification.setTitle(title);
+            notification.setContent(content);
+            notification.setType(type == null ? "system" : type);
+            notification.setIsRead(0);
+            notificationMapper.insert(notification);
+        } catch (Exception e) {
+            // 通知属非关键路径（如未执行 db/notification.sql），失败只记日志，
+            // 不向上抛出以免拖垮调用方的订单状态流转事务
+            log.error("写入通知失败: userId={}, title={}", userId, title, e);
+        }
     }
 
     private NotificationVO toVO(Notification notification) {
