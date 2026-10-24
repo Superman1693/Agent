@@ -13,7 +13,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
-import javax.validation.Valid;
+// 修复 E1/D11：Spring Boot 3 只识别 jakarta.validation.Valid，使用 javax 会导致 @Valid 静默失效
+import jakarta.validation.Valid;
 import java.util.List;
 
 /**

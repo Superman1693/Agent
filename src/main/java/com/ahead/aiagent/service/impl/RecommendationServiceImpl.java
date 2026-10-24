@@ -12,20 +12,29 @@ import com.ahead.aiagent.model.vo.RecommendationPageVO;
 import com.ahead.aiagent.model.vo.RecommendationVO;
 import com.ahead.aiagent.service.RecommendationService;
 import com.ahead.aiagent.tools.WebSearchTool;
+import com.ahead.aiagent.utils.LlmRetryUtils;
+import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import jakarta.annotation.Resource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 /**
@@ -44,6 +53,30 @@ public class RecommendationServiceImpl implements RecommendationService {
     private static final int DEFAULT_SIZE = 10;
     private static final int MIN_SIZE = 1;
     private static final int MAX_SIZE = 100;
+
+    /** 安全修复 E6/D1：Pexels Key 从环境变量注入，禁止硬编码 */
+    @Value("${pexels.api-key:}")
+    private String pexelsApiKey;
+
+    /** 修复 O4：结构化抽取/生成使用轻量模型（默认与主模型一致，行为不变） */
+    @Value("${app.llm.extract-model:qwen-plus}")
+    private String extractModel;
+
+    /** 修复 O2：LLM 调用重试退避参数 */
+    @Value("${app.llm.retry.max-attempts:3}")
+    private int llmRetryMaxAttempts;
+    @Value("${app.llm.retry.initial-backoff-ms:500}")
+    private long llmRetryInitialBackoffMs;
+    @Value("${app.llm.retry.max-backoff-ms:4000}")
+    private long llmRetryMaxBackoffMs;
+
+    /** 修复 O9：关键词检索是否并行执行 */
+    @Value("${app.refresh.parallel-enabled:true}")
+    private boolean refreshParallelEnabled;
+
+    /** 修复 O9：并行检索复用的专用线程池 */
+    @Resource(name = "agentTaskExecutor")
+    private Executor refreshExecutor;
 
     @Override
     @Cacheable(value = "hotRecommendations", key = "#request.page + '_' + #request.size + '_' + #request.sortBy + '_' + #request.sortOrder")
@@ -85,8 +118,9 @@ public class RecommendationServiceImpl implements RecommendationService {
             return new RecommendationPageVO(voList, pageResult.getTotal(), page, size);
 
         } catch (Exception e) {
+            // 修复 E34：保留原始异常与堆栈
             log.error("查询热门推荐失败", e);
-            throw new RuntimeException("查询失败，请稍后重试");
+            throw new RuntimeException("查询失败，请稍后重试", e);
         }
     }
 
@@ -126,8 +160,6 @@ public class RecommendationServiceImpl implements RecommendationService {
      * 采集候选数据
      */
     private List<Recommendation> collectCandidates() {
-        List<Recommendation> candidates = new ArrayList<>();
-
         // 定义搜索关键词
         String[] keywords = {
                 "2026年热门旅游景点推荐",
@@ -135,24 +167,38 @@ public class RecommendationServiceImpl implements RecommendationService {
                 "高性价比旅游目的地"
         };
 
+        // 修复 O9：原实现串行处理 3 个关键词并 Thread.sleep(1000) 限速，改为并行执行；
+        // 可用 app.refresh.parallel-enabled=false 回退为串行。
+        List<CompletableFuture<List<Recommendation>>> futures = new ArrayList<>(keywords.length);
         for (String keyword : keywords) {
+            if (refreshParallelEnabled) {
+                futures.add(CompletableFuture.supplyAsync(() -> collectByKeyword(keyword), refreshExecutor));
+            } else {
+                futures.add(CompletableFuture.completedFuture(collectByKeyword(keyword)));
+            }
+        }
+
+        List<Recommendation> candidates = new ArrayList<>();
+        for (CompletableFuture<List<Recommendation>> future : futures) {
             try {
-                // 使用网页搜索工具
-                String searchResult = webSearchTool.search(keyword);
-
-                // 使用 AI 提取和结构化信息
-                List<Recommendation> extracted = extractRecommendationsFromSearch(searchResult, keyword);
-                candidates.addAll(extracted);
-
-                // 避免请求过快
-                Thread.sleep(1000);
-
+                candidates.addAll(future.join());
             } catch (Exception e) {
-                log.error("搜索关键词 {} 失败", keyword, e);
+                log.error("关键词候选采集失败", e);
             }
         }
 
         return candidates;
+    }
+
+    /** 单个关键词的「网页搜索 + AI 抽取」流程（供并行调用，内部自吞异常避免拖垮整批） */
+    private List<Recommendation> collectByKeyword(String keyword) {
+        try {
+            String searchResult = webSearchTool.search(keyword);
+            return extractRecommendationsFromSearch(searchResult, keyword);
+        } catch (Exception e) {
+            log.error("搜索关键词 {} 失败", keyword, e);
+            return Collections.emptyList();
+        }
     }
 
     /**
@@ -306,9 +352,13 @@ public class RecommendationServiceImpl implements RecommendationService {
     }
 
     private String searchPexelsImage(String query, String selectionSeed, Set<String> usedImageUrls) {
+        // 修复 E6/D1：未配置 Key 时跳过，直接走占位图
+        if (StrUtil.isBlank(pexelsApiKey)) {
+            return null;
+        }
         try {
             Map<String, String> headers = new HashMap<>();
-            headers.put("Authorization", "fVCsVgtgxpOsTnHSuHBF18xrAIz1yAQwR2uCTYCRDowxSBqL8NPweWyP");
+            headers.put("Authorization", pexelsApiKey);
 
             Map<String, Object> params = new HashMap<>();
             params.put("query", query);
@@ -409,10 +459,21 @@ public class RecommendationServiceImpl implements RecommendationService {
                 rec.setUpdateTime(now);
                 recommendationMapper.updateById(rec);
             } else {
-                // 插入
+                // 插入（修复 E30/D20：并发唯一键冲突降级为更新，避免中断整个 @Transactional 循环）
                 rec.setCreateTime(now);
                 rec.setUpdateTime(now);
-                recommendationMapper.insert(rec);
+                try {
+                    recommendationMapper.insert(rec);
+                } catch (DuplicateKeyException dup) {
+                    log.warn("推荐并发插入冲突，降级为更新: {}", rec.getTitle());
+                    Recommendation concurrent = recommendationMapper.selectOne(
+                            new LambdaQueryWrapper<Recommendation>().eq(Recommendation::getTitle, rec.getTitle()));
+                    if (concurrent != null) {
+                        rec.setId(concurrent.getId());
+                        rec.setCreateTime(concurrent.getCreateTime());
+                        recommendationMapper.updateById(rec);
+                    }
+                }
             }
         }
     }
@@ -435,13 +496,12 @@ public class RecommendationServiceImpl implements RecommendationService {
             // 使用 AI 生成该位置附近的热门景点推荐
             List<Recommendation> recommendations = generateNearbyRecommendations(userLocation);
 
-            if (!recommendations.isEmpty()) {
-                // 先计算分数并尝试入库，确保接口返回可用的持久化 id
-                calculateScores(recommendations);
-                upsertRecommendations(recommendations);
-            }
+            // 修复 E5/D3：不再执行 upsertRecommendations 写库。
+            // 该接口过去允许匿名传入任意 location 并落库，可被批量注入垃圾数据污染推荐表；
+            // 现改为纯实时生成 + 缓存返回，写库仅发生在受鉴权保护的 refresh 流程中。
+            calculateScores(recommendations);
 
-            // 双保险：极端情况下入库失败或未回填 id，仍保证前端拿到非空 id
+            // 未入库，使用负数临时 id（见 ensureRecommendationIds），与真实 DB 自增 id 空间隔离
             ensureRecommendationIds(recommendations, userLocation);
 
             // 转换为 VO
@@ -455,8 +515,9 @@ public class RecommendationServiceImpl implements RecommendationService {
             return new RecommendationPageVO(voList, (long) voList.size(), 1, voList.size());
 
         } catch (Exception e) {
+            // 修复 E34：保留原始异常与堆栈，便于排障
             log.error("查询附近热门景点失败", e);
-            throw new RuntimeException("查询失败，请稍后重试");
+            throw new RuntimeException("查询失败，请稍后重试", e);
         }
     }
 
@@ -494,10 +555,18 @@ public class RecommendationServiceImpl implements RecommendationService {
                 """, userLocation, userLocation);
 
         try {
+            // 修复 O4：结构化生成使用轻量模型（app.llm.extract-model）
+            ChatOptions extractOptions = DashScopeChatOptions.builder().withModel(extractModel).build();
             ChatClient chatClient = chatClientBuilder.build();
-            String response = chatClient.prompt(new Prompt(prompt))
-                    .call()
-                    .content();
+            // 修复 O2：对限流/瞬时故障做指数退避重试
+            String response = LlmRetryUtils.callWithRetry(
+                    () -> chatClient.prompt(new Prompt(List.of(new UserMessage(prompt)), extractOptions))
+                            .call()
+                            .content(),
+                    llmRetryMaxAttempts,
+                    llmRetryInitialBackoffMs,
+                    llmRetryMaxBackoffMs,
+                    "recommendation.nearby");
 
             return parseRecommendationsFromJson(response, "附近景点-" + userLocation);
 
@@ -516,6 +585,8 @@ public class RecommendationServiceImpl implements RecommendationService {
         if (vo.getTags() == null) {
             vo.setTags(new ArrayList<>());
         }
+        // 修复 O24：标注数据来源。当前推荐数据均由大模型生成，价格/评分/评价数为估算值。
+        vo.setDataSource("llm");
         return vo;
     }
 
@@ -525,9 +596,9 @@ public class RecommendationServiceImpl implements RecommendationService {
             if (rec.getId() != null) {
                 continue;
             }
-            long fallbackId = Math.abs(Objects.hash(userLocation, rec.getTitle(), rec.getLocation(), i));
-            // 避免 0 值并保持正数
-            rec.setId(fallbackId == 0 ? (long) (i + 1) : fallbackId);
+            // 修复 E36/D26：原用 Math.abs(Objects.hash(...)) 生成假 id，与真实 DB 自增 id 处于同一
+            // 数值空间，存在碰撞风险（前端会跳转到另一个商品）。改用负数临时 id，明确与真实 id 隔离。
+            rec.setId(-(long) (i + 1));
         }
     }
 

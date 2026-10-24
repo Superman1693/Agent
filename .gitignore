@@ -3,6 +3,8 @@ application-local.yml
 application-prod.yml
 mcp-server.json
 tmp
+tmp-deps/
+.history/
 HELP.md
 
 ### 敏感文件 ###

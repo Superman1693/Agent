@@ -22,7 +22,6 @@ public class LocationResolveVO {
 
     private String district;
 
-
     private String formattedAddress;
 
     private Double latitude;

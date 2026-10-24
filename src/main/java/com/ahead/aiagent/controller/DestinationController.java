@@ -9,6 +9,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -41,8 +42,9 @@ public class DestinationController {
         return ResultUtils.success(destination);
     }
 
-    @Operation(summary = "手动刷新精选目的地（测试用）")
-    @GetMapping("/refresh")
+    @Operation(summary = "手动刷新精选目的地（需登录）")
+    // 修复 E4/D2：由 GET 改为 POST，并纳入鉴权拦截，避免匿名/预取器反复触发昂贵任务
+    @PostMapping("/refresh")
     public BaseResponse<String> refreshDestinations() {
         destinationService.refreshDestinations();
         return ResultUtils.success("刷新成功");

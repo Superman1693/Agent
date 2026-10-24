@@ -6,8 +6,6 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
 import java.util.List;
@@ -48,7 +46,12 @@ public class WebSearchTool {
             JSONObject jsonObject = JSONUtil.parseObj(response);
 
             JSONArray organicResults = jsonObject.getJSONArray("organic_results");
-            List<Object> objects = organicResults.subList(0, 5);
+            // 修复 E32/D22：organic_results 为 null 或元素不足 5 个时会抛 NPE / IndexOutOfBoundsException，
+            // 过去被 catch 兜住后把「结果不足」误报为「搜索失败」。这里显式判空并限制下标。
+            if (organicResults == null || organicResults.isEmpty()) {
+                return "未找到与「" + query + "」相关的搜索结果。";
+            }
+            List<Object> objects = organicResults.subList(0, Math.min(5, organicResults.size()));
 
             String result = objects.stream().map(obj -> {
                 JSONObject tmpJSONObject = (JSONObject) obj;

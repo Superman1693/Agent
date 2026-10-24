@@ -8,11 +8,15 @@ spring:
       pgvector:
         index-type: HNSW
         distance-type: COSINE_DISTANCE
-        dimensions: 1536
-        max-document-batch-size: 10000
+        # 修复 E9/O12（二次修正）：text-embedding-v3 仅支持 [64,128,256,512,768,1024]，
+        # 原值 1536 会被 DashScope 拒绝（InvalidParameter），导致向量库初始化失败、应用起不来。
+        dimensions: 1024
+        # 修复：DashScope text-embedding-v3 单次批量上限为 10，原值 10000 会触发 400
+        max-document-batch-size: 10
     mcp:
       client:
-        initialized: true
+        # 修复 E25/O21：改为 false（懒加载），避免 MCP Server 未启动时应用启动失败
+        initialized: false
         request-timeout: 60s
 #        stdio:
 #          servers-configuration: classpath:mcp-servers.json
@@ -20,11 +24,34 @@ spring:
           connections:
             server1:
               url: http://localhost:8127
+  # 修复 O11：数据库变更版本化管理。默认关闭（不接管现有手工 SQL，避免影响启动）；
+  # 需要启用时设 FLYWAY_ENABLED=true，并把迁移脚本放到 classpath:db/migration 下。
+  flyway:
+    enabled: ${FLYWAY_ENABLED:false}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: true
+    table: flyway_schema_history
   # 文件上传大小限制
   servlet:
     multipart:
       max-file-size: 5MB
       max-request-size: 10MB
+  # 安全修复 E19/D6：找回密码邮箱验证码。未配置 MAIL_HOST 时邮件服务不可用，
+  # 发送验证码接口会返回明确的错误提示；生产环境通过环境变量注入。
+  mail:
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
 logging:
   level:
     org.springframework.web.client.RestClient: DEBUG
@@ -35,39 +62,37 @@ server:
   servlet:
     context-path: /api
 
-# 接口文档
+# 接口文档（安全修复：文档默认开启便于开发，生产环境用 SPRINGDOC_ENABLED=false 关闭，避免泄露接口面）
 springdoc:
+  api-docs:
+    enabled: ${SPRINGDOC_ENABLED:true}
   swagger-ui:
     path: /swagger-ui.html
     tags-sorter: alpha
     operations-sorter: alpha
-  api-docs:
-    path: /v3/api-docs
   group-configs:
     - group: 'default'
       paths-to-match: '/**'
       packages-to-scan: com.ahead.aiagent.controller
 
 knife4j:
-  enable: true
+  enable: ${SPRINGDOC_ENABLED:true}
   setting:
     language: zh_cn
 
-# JWT 配置
+# JWT 配置（安全修复：去掉仓库内已知默认值。未设置 JWT_SECRET 时应用启动即失败，防止任意伪造 token）
 jwt:
-  secret: ${JWT_SECRET:ai-agent-jwt-secret-key-must-be-at-least-32-chars}
+  secret: ${JWT_SECRET:}
   expiration: 86400000  # 24小时（毫秒）
 
 # MyBatis-Plus
+# 注意（修复 E8）：DataSourceConfig 手工构建 SqlSessionFactory，MybatisPlusAutoConfiguration 会退让，
+# 因此这里的 log-impl 实际由 DataSourceConfig 中显式设置生效。
+# 原 logic-delete-* 配置已移除：全项目无任何实体含 deleted 字段，属无效死配置。
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-  global-config:
-    db-config:
-      logic-delete-field: deleted
-      logic-delete-value: 1
-      logic-not-delete-value: 0
 
 # 阿里云 OSS
 aliyun:
@@ -77,3 +102,64 @@ aliyun:
     access-key-secret: ${ALIYUN_OSS_KEY_SECRET:}
     bucket-name: ${ALIYUN_OSS_BUCKET:}
     domain: ${ALIYUN_OSS_DOMAIN:}
+
+# 第三方服务密钥（安全修复 E6/D1：密钥一律走环境变量，禁止硬编码进源码）
+# 注意：历史提交中的 Pexels Key 已泄露，请到 Pexels 后台轮换后再通过环境变量注入
+pexels:
+  api-key: ${PEXELS_API_KEY:}
+
+# CORS 允许来源（安全修复 E17/D4）
+app:
+  # 修复 O1：Agent/SSE 专用线程池参数（替代 ForkJoinPool.commonPool）
+  agent:
+    executor:
+      core-size: ${AGENT_EXECUTOR_CORE_SIZE:4}
+      max-size: ${AGENT_EXECUTOR_MAX_SIZE:16}
+      queue-capacity: ${AGENT_EXECUTOR_QUEUE_CAPACITY:100}
+    tools:
+      # 安全修复 D9：终端命令工具默认关闭，确需开启设 AGENT_TOOLS_TERMINAL_ENABLED=true（应在容器/沙箱内）
+      terminal-enabled: ${AGENT_TOOLS_TERMINAL_ENABLED:false}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173}
+  job:
+    # 修复 E10/O8：测试用每日任务默认禁用（"-" 为 Spring 的 CRON_DISABLED）
+    destination-weekly-cron: "0 0 2 ? * MON"
+    recommendation-monthly-cron: "0 0 2 1 * ?"
+    test-daily-cron: "-"
+  # 修复 O4：分级模型。决策步骤用主模型，结构化抽取可换成更轻量的模型；
+  # 默认两者一致（行为不变），需要时用环境变量切换。
+  llm:
+    decision-model: ${LLM_DECISION_MODEL:qwen-plus}
+    extract-model: ${LLM_EXTRACT_MODEL:qwen-plus}
+    # 修复 O2：LLM 调用重试退避（针对 429/5xx 等可恢复错误）
+    retry:
+      max-attempts: ${LLM_RETRY_MAX_ATTEMPTS:3}
+      initial-backoff-ms: ${LLM_RETRY_INITIAL_BACKOFF_MS:500}
+      max-backoff-ms: ${LLM_RETRY_MAX_BACKOFF_MS:4000}
+  # 修复 O9：定时刷新的关键词检索是否并行执行（配合限流器）
+  refresh:
+    parallel-enabled: ${REFRESH_PARALLEL_ENABLED:true}
+  # 修复 O23：Agent 过程回溯落库开关。默认关闭；执行 db/agent_trace.sql 后置为 true 启用
+  trace:
+    persist-enabled: ${TRACE_PERSIST_ENABLED:false}
+  # 修复 O5：产物是否外置到 OSS（默认关闭；需先配置 ALIYUN_OSS_* 环境变量）
+  artifact:
+    oss-enabled: ${ARTIFACT_OSS_ENABLED:false}
+
+# 修复 O13：可观测性端点。
+# 安全修复：Actuator 独立端口（默认 9124），与应用主端口(8123)隔离，
+# 避免匿名访问 /api/actuator/** 泄露内部指标与工具信息。
+# Prometheus 抓取地址相应变为：http://<host>:9124/actuator/prometheus
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9124}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+  metrics:
+    tags:
+      application: ai-agent

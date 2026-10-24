@@ -16,6 +16,7 @@ import com.ahead.aiagent.model.vo.OrderListVO;
 import com.ahead.aiagent.model.vo.OrderVO;
 import com.ahead.aiagent.service.OrderService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -118,15 +119,19 @@ public class OrderServiceImpl implements OrderService {
         if (!order.getUserId().equals(userId)) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限取消该订单");
         }
-        if ("completed".equals(order.getStatus()) || "refund".equals(order.getStatus())) {
+
+        // 修复 E11/D13：由「读-判断-写」改为带状态条件的原子更新，避免并发下取消与支付互相覆盖。
+        // 修复 E33/D14：取消使用独立状态 cancelled，与售后 refund 区分，便于统计取消率与售后率。
+        int rows = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
+                .eq(Order::getId, orderId)
+                .eq(Order::getUserId, userId)
+                .in(Order::getStatus, "pending_payment", "pending_travel")
+                .set(Order::getStatus, "cancelled")
+                .set(StrUtil.isNotBlank(reason), Order::getCancelReason, reason == null ? null : reason.trim()));
+        if (rows == 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "当前订单状态不可取消");
         }
-
-        order.setStatus("refund");
-        if (StrUtil.isNotBlank(reason)) {
-            order.setCancelReason(reason.trim());
-        }
-        return orderMapper.updateById(order) > 0;
+        return true;
     }
 
     @Override
@@ -139,12 +144,17 @@ public class OrderServiceImpl implements OrderService {
         if (!order.getUserId().equals(userId)) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限支付该订单");
         }
-        if (!"pending_payment".equals(order.getStatus())) {
+
+        // 修复 E11/D13：仅当状态仍为 pending_payment 时才更新，保证支付与取消互斥
+        int rows = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
+                .eq(Order::getId, orderId)
+                .eq(Order::getUserId, userId)
+                .eq(Order::getStatus, "pending_payment")
+                .set(Order::getStatus, "pending_travel"));
+        if (rows == 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "当前订单状态不可支付");
         }
-
-        order.setStatus("pending_travel");
-        return orderMapper.updateById(order) > 0;
+        return true;
     }
 
     @Override
@@ -157,16 +167,18 @@ public class OrderServiceImpl implements OrderService {
         if (!order.getUserId().equals(userId)) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限申请该订单售后");
         }
-        if ("refund".equals(order.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "当前订单已在退款/售后处理中");
-        }
-        if (!"pending_travel".equals(order.getStatus()) && !"completed".equals(order.getStatus())) {
+
+        // 修复 E11/D13：带状态条件的原子更新，防止重复提交与状态漂移
+        int rows = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
+                .eq(Order::getId, orderId)
+                .eq(Order::getUserId, userId)
+                .in(Order::getStatus, "pending_travel", "completed")
+                .set(Order::getStatus, "refund")
+                .set(Order::getCancelReason, StrUtil.isBlank(reason) ? "用户申请退款/售后" : reason.trim()));
+        if (rows == 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "当前订单状态暂不支持售后申请");
         }
-
-        order.setStatus("refund");
-        order.setCancelReason(StrUtil.isBlank(reason) ? "用户申请退款/售后" : reason.trim());
-        return orderMapper.updateById(order) > 0;
+        return true;
     }
 
     private ProductSnapshot resolveProductSnapshot(String productType, Long productId) {
@@ -180,13 +192,19 @@ public class OrderServiceImpl implements OrderService {
             return new ProductSnapshot(destination.getName(), destination.getImageUrl(), amount);
         }
 
-        Recommendation recommendation = recommendationMapper.selectById(productId);
-        if (recommendation == null || !Integer.valueOf(1).equals(recommendation.getIsActive())) {
-            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "推荐商品不存在");
+        if ("package".equals(productType)) {
+            // 修复 E22：显式区分 package 分支。当前套餐商品复用 recommendation 表
+            // （尚无独立 package 表）；未来新增套餐表时应在此处改为查套餐表，避免静默查错表。
+            Recommendation recommendation = recommendationMapper.selectById(productId);
+            if (recommendation == null || !Integer.valueOf(1).equals(recommendation.getIsActive())) {
+                throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "推荐商品不存在");
+            }
+
+            BigDecimal amount = recommendation.getPrice() == null ? BigDecimal.ZERO : recommendation.getPrice();
+            return new ProductSnapshot(recommendation.getTitle(), recommendation.getImageUrl(), amount);
         }
 
-        BigDecimal amount = recommendation.getPrice() == null ? BigDecimal.ZERO : recommendation.getPrice();
-        return new ProductSnapshot(recommendation.getTitle(), recommendation.getImageUrl(), amount);
+        throw new BusinessException(ErrorCode.PARAMS_ERROR, "不支持的 productType");
     }
 
     private String generateOrderNo() {

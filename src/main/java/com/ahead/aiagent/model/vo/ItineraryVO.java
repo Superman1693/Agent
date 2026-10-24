@@ -28,7 +28,7 @@ public class ItineraryVO implements Serializable {
 
     private String status;
 
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime createTime;
 
     private static final long serialVersionUID = 1L;

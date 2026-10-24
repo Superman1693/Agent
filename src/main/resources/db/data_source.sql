@@ -1,0 +1,22 @@
+-- 修复 O24（可选启用）：数据真实性标注字段
+--
+-- 背景：
+--   推荐与目的地的 价格 / 评分 / 评价数 均由大模型生成（prompt 中明确要求「合理估算」「4.0–5.0 之间」），
+--   本质是模型估算值。当前已在 VO 层统一返回 dataSource=llm，前端据此展示「AI 生成，仅供参考」，
+--   并把价格文案改为「约 ¥XXXX 起」。
+--
+-- 若需要进一步区分「LLM 生成 / API 校验 / 人工录入」，执行以下语句把来源持久化到数据库：
+--
+--   ALTER TABLE destination
+--       ADD COLUMN data_source VARCHAR(20) NOT NULL DEFAULT 'llm' COMMENT '数据来源：llm/api/manual';
+--
+--   ALTER TABLE recommendation
+--       ADD COLUMN data_source VARCHAR(20) NOT NULL DEFAULT 'llm' COMMENT '数据来源：llm/api/manual';
+--
+-- 执行后的后续动作：
+--   1) 在实体 Destination / Recommendation 上补 dataSource 字段（@TableField("data_source")）
+--   2) 去掉 DestinationServiceImpl / RecommendationServiceImpl 中 convertToVO 的硬编码 setDataSource("llm")
+--   3) 由数据写入方（定时刷新任务 / 人工后台）负责写入真实来源
+--
+-- 安全说明：
+--   未执行本脚本时系统行为完全不受影响 —— VO 层已提供默认标注，不存在「缺列导致查询失败」的问题。

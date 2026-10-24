@@ -29,7 +29,7 @@ public class ItineraryDetailVO implements Serializable {
 
     private String status;
 
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime createTime;
 
     private List<ItineraryDayVO> days;

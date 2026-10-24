@@ -7,8 +7,10 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,8 +19,9 @@ import java.util.stream.Collectors;
 @Service
 public class ImageSearchTool {
 
-    private static final String API_KEY = "fVCsVgtgxpOsTnHSuHBF18xrAIz1yAQwR2uCTYCRDowxSBqL8NPweWyP";
-
+    // 安全修复 E6/D1：Pexels Key 从环境变量注入（PEXELS_API_KEY），禁止硬编码进源码
+    @Value("${pexels.api-key:}")
+    private String apiKey;
 
     private static final String API_URL = "https://api.pexels.com/v1/search";
 
@@ -39,9 +42,12 @@ public class ImageSearchTool {
      */
 
     public List<String> searchMediumImages(String query) {
+        if (StrUtil.isBlank(apiKey)) {
+            return Collections.emptyList();
+        }
         // 设置请求头
         Map<String, String> headers = new HashMap<>();
-        headers.put("Authorization", API_KEY);
+        headers.put("Authorization", apiKey);
 
         // 设置参数
         Map<String, Object> params = new HashMap<>();

@@ -5,3 +5,7 @@ spring:
     active: sse
 server:
   port: 8127
+
+# 安全修复 E6/D1：Pexels Key 从环境变量注入，禁止硬编码
+pexels:
+  api-key: ${PEXELS_API_KEY:}

@@ -1,17 +1,13 @@
 package com.ahead.aiagent.app;
 
 import com.ahead.aiagent.advisor.MySimpleLoggerAdvisor;
-import com.ahead.aiagent.advisor.ReReadingAdvisor;
 import com.ahead.aiagent.demo.rag.QueryRewriter;
 import com.ahead.aiagent.rag.TravelAppRagCustomAdvisorFactory;
-import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 
 import org.springframework.ai.chat.client.advisor.api.Advisor;
-// 引入新的包路径
-import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory; // 用于获取 CONVERSATION_ID
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
@@ -20,6 +16,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.vectorstore.VectorStore;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
@@ -37,6 +34,11 @@ public class TravelApp {
         private final ChatModel chatModel;
         private final ChatMemory toolChatMemory;
 
+        // 修复 O7：ChatClient 懒加载缓存，避免每次调用都 ChatClient.builder(...).build()
+        private volatile ChatClient ragChatClient;
+        private volatile ChatClient toolChatClient;
+        private volatile ChatClient mcpChatClient;
+
         public TravelApp(ChatModel dashscopeChatModel) {
                 this.chatModel = dashscopeChatModel;
                 ChatMemory chatMemory = MessageWindowChatMemory.builder()
@@ -49,8 +51,6 @@ public class TravelApp {
                                 .defaultAdvisors(
                                                 memoryAdvisor,
                                                 new MySimpleLoggerAdvisor())
-                                // 不管用户输入什么，都将忽略，将下面提示词输出给AI
-                                // new ReReadingAdvisor("请根据我的需求，生成一个完整的旅游方案，并详细说明每个步骤。"))
                                 .build();
         }
 
@@ -68,8 +68,8 @@ public class TravelApp {
         }
 
         /**
-         * AI基础对话，SSE流失输出
-         * 
+         * AI基础对话，SSE流失传世
+         *
          * @param message
          * @param chatId
          * @return
@@ -100,22 +100,26 @@ public class TravelApp {
                 return travelReport;
         }
 
-        @Resource
+        // 修复 E25/O21：非核心能力改为可选注入，任一外部依赖缺失不再导致应用启动失败
+        @Autowired(required = false)
         private VectorStore travelAppVectorStore;
 
-        @Resource
+        @Autowired(required = false)
         private Advisor travelAppRagCloudAdvisor;
 
-        @Resource
+        @Autowired(required = false)
         private VectorStore pgVectorVectorStore;
 
-        @Resource
+        @Autowired(required = false)
         private QueryRewriter queryRewriter;
 
-        @Resource
+        @Autowired(required = false)
         private MySimpleLoggerAdvisor mySimpleLoggerAdvisor;
 
         public String doChatWithRag(String message, String chatId) {
+                if (pgVectorVectorStore == null || queryRewriter == null || travelAppVectorStore == null) {
+                        throw new IllegalStateException("RAG 能力未启用：请配置向量库与查询重写器");
+                }
                 // 查询重写
                 String rewriteMessage = queryRewriter.doQueryRewrite(message);
                 // 诊断：直接测试向量检索
@@ -131,31 +135,7 @@ public class TravelApp {
                 docs.forEach(d -> context.append(d.getText()).append("\n\n"));
                 String augmentedMessage = "参考资料：\n" + context + "\n根据以上参考资料，回答问题：" + rewriteMessage;
 
-                // RAG场景用chatModel重新构建干净的client，不含ReReadingAdvisor（它会覆盖user message）
-                ChatMemory ragMemory = MessageWindowChatMemory.builder().maxMessages(20).build();
-
-                ChatClient ragChatClient = ChatClient.builder(chatModel)
-                                .defaultSystem(SYSTEM_PROMPT)
-                                .defaultAdvisors(
-                                                MessageChatMemoryAdvisor.builder(ragMemory).build(),
-                                                mySimpleLoggerAdvisor,
-                                                // 过滤特定状态的文档
-                                                TravelAppRagCustomAdvisorFactory.createTravelAppRAgCustomAdvisor(
-                                                                travelAppVectorStore, "生活")
-                                // 旧版样式
-                                // 开启日志，便于观察效果
-                                // .advisors(new MySimpleLoggerAdvisor())
-                                // 注意：由于新版强制使用 Builder 模式，如果你后续放开下面这行注释，也需写成 builder()
-                                // 应用RAG知识库问答，问答拦截器
-                                // QuestionAnswerAdvisor.builder(travelAppVectorStore).build()
-                                // 应用RAG索引增强服务
-                                // travelAppRagCloudAdvisor
-                                // 应用RAG索引增强服务（基于pgVector向量存储）
-                                // QuestionAnswerAdvisor.builder(pgVectorVectorStore).build()
-                                )
-                                .build();
-
-                ChatResponse chatResponse = ragChatClient
+                ChatResponse chatResponse = getRagChatClient()
                                 .prompt()
                                 .user(augmentedMessage)
                                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
@@ -166,22 +146,37 @@ public class TravelApp {
                 return content;
         }
 
-        @Resource
+        private ChatClient getRagChatClient() {
+                ChatClient local = ragChatClient;
+                if (local == null) {
+                        synchronized (this) {
+                                local = ragChatClient;
+                                if (local == null) {
+                                        ChatMemory ragMemory = MessageWindowChatMemory.builder().maxMessages(20).build();
+                                        local = ChatClient.builder(chatModel)
+                                                        .defaultSystem(SYSTEM_PROMPT)
+                                                        .defaultAdvisors(
+                                                                        MessageChatMemoryAdvisor.builder(ragMemory).build(),
+                                                                        mySimpleLoggerAdvisor == null ? new MySimpleLoggerAdvisor() : mySimpleLoggerAdvisor,
+                                                                        TravelAppRagCustomAdvisorFactory.createTravelAppRAgCustomAdvisor(
+                                                                                        travelAppVectorStore, "生活"))
+                                                        .build();
+                                        ragChatClient = local;
+                                }
+                        }
+                }
+                return local;
+        }
+
+        // 修复 E25/O21：工具能力改为可选注入
+        @Autowired(required = false)
         private ToolCallback[] allTools;
 
         public String doChatWithTools(String message, String chatId) {
-                // 1. 基于共享的 toolChatMemory 创建记忆 Advisor
-                MessageChatMemoryAdvisor toolMemoryAdvisor = MessageChatMemoryAdvisor.builder(toolChatMemory).build();
-                // 2. 构建干净的 ChatClient
-                ChatClient toolChatClient = ChatClient.builder(chatModel)
-                                .defaultSystem("你是一个智能助手，请根据用户的指令，灵活使用提供的工具（如文件读写、终端执行等）来完成任务。如果不需要工具则直接回答。")
-                                .defaultAdvisors(
-                                                toolMemoryAdvisor, // ✅ 注入记忆 Advisor
-                                                new MySimpleLoggerAdvisor())
-                                .build();
-
-                // 3. 执行调用
-                ChatResponse response = toolChatClient
+                if (allTools == null || allTools.length == 0) {
+                        throw new IllegalStateException("工具能力未启用：未注册任何 ToolCallback");
+                }
+                ChatResponse response = getToolChatClient()
                                 .prompt()
                                 .user(message)
                                 // 传入 chatId，告诉 Advisor 去 toolChatMemory 的哪个会话桶里读写上下文
@@ -195,23 +190,40 @@ public class TravelApp {
                 return content;
         }
 
+        private ChatClient getToolChatClient() {
+                ChatClient local = toolChatClient;
+                if (local == null) {
+                        synchronized (this) {
+                                local = toolChatClient;
+                                if (local == null) {
+                                        local = buildToolClient();
+                                        toolChatClient = local;
+                                }
+                        }
+                }
+                return local;
+        }
+
+        private ChatClient buildToolClient() {
+                MessageChatMemoryAdvisor toolMemoryAdvisor = MessageChatMemoryAdvisor.builder(toolChatMemory).build();
+                return ChatClient.builder(chatModel)
+                                .defaultSystem("你是一个智能助手，请根据用户的指令，灵活使用提供的工具（如文件读写、终端执行等）来完成任务。如果不需要工具则直接回答。")
+                                .defaultAdvisors(
+                                                toolMemoryAdvisor,
+                                                new MySimpleLoggerAdvisor())
+                                .build();
+        }
+
         // AI调用mcp服务
-        @Resource
+        // 修复 E25/O21：MCP 客户端改为可选注入，MCP Server 未启动不再导致启动失败
+        @Autowired(required = false)
         private ToolCallbackProvider toolCallbackProvider;
 
         public String doChatWithMcp(String message, String chatId) {
-                // 1. 基于共享的 toolChatMemory 创建记忆 Advisor
-                MessageChatMemoryAdvisor toolMemoryAdvisor = MessageChatMemoryAdvisor.builder(toolChatMemory).build();
-                // 2. 构建干净的 ChatClient
-                ChatClient toolChatClient = ChatClient.builder(chatModel)
-                                .defaultSystem("你是一个智能助手，请根据用户的指令，灵活使用提供的工具（如文件读写、终端执行等）来完成任务。如果不需要工具则直接回答。")
-                                .defaultAdvisors(
-                                                toolMemoryAdvisor, // ✅ 注入记忆 Advisor
-                                                new MySimpleLoggerAdvisor())
-                                .build();
-
-                // 3. 执行调用
-                ChatResponse response = toolChatClient
+                if (toolCallbackProvider == null) {
+                        throw new IllegalStateException("MCP 能力未启用：未检测到 ToolCallbackProvider");
+                }
+                ChatResponse response = getMcpChatClient()
                                 .prompt()
                                 .user(message)
                                 // 传入 chatId，告诉 Advisor 去 toolChatMemory 的哪个会话桶里读写上下文
@@ -223,6 +235,20 @@ public class TravelApp {
                 String content = response.getResult().getOutput().getText();
                 log.info("content: {}", content);
                 return content;
+        }
+
+        private ChatClient getMcpChatClient() {
+                ChatClient local = mcpChatClient;
+                if (local == null) {
+                        synchronized (this) {
+                                local = mcpChatClient;
+                                if (local == null) {
+                                        local = buildToolClient();
+                                        mcpChatClient = local;
+                                }
+                        }
+                }
+                return local;
         }
 
 }

@@ -16,6 +16,7 @@ import com.ahead.aiagent.service.FavoriteService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -55,7 +56,20 @@ public class FavoriteServiceImpl implements FavoriteService {
         favorite.setTargetType(targetType);
         favorite.setTargetName(snapshot.name());
         favorite.setTargetImage(snapshot.image());
-        favoriteMapper.insert(favorite);
+        try {
+            favoriteMapper.insert(favorite);
+        } catch (DuplicateKeyException e) {
+            // 修复 E31/D19：并发重复收藏会撞 UNIQUE KEY uniq_user_target。
+            // 改为幂等处理——回查已存在记录并直接返回，避免用户快速双击收到 500。
+            Favorite concurrent = favoriteMapper.selectOne(new LambdaQueryWrapper<Favorite>()
+                    .eq(Favorite::getUserId, userId)
+                    .eq(Favorite::getTargetId, request.getTargetId())
+                    .eq(Favorite::getTargetType, targetType));
+            if (concurrent != null) {
+                return toVO(concurrent);
+            }
+            throw e;
+        }
 
         return toVO(favorite);
     }

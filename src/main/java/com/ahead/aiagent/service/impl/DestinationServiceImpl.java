@@ -12,18 +12,27 @@ import com.ahead.aiagent.model.entity.Destination;
 import com.ahead.aiagent.model.vo.DestinationVO;
 import com.ahead.aiagent.service.DestinationService;
 import com.ahead.aiagent.tools.WebSearchTool;
+import com.ahead.aiagent.utils.LlmRetryUtils;
+import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import jakarta.annotation.Resource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 /**
@@ -40,6 +49,30 @@ public class DestinationServiceImpl implements DestinationService {
 
     private static final String[] TAG_COLORS = { "primary", "secondary", "tertiary" };
     private static final int TOP_N = 3;
+
+    /** 安全修复 E6/D1：Pexels Key 从环境变量注入，禁止硬编码 */
+    @Value("${pexels.api-key:}")
+    private String pexelsApiKey;
+
+    /** 修复 O4：结构化抽取使用轻量模型（默认与主模型一致，行为不变） */
+    @Value("${app.llm.extract-model:qwen-plus}")
+    private String extractModel;
+
+    /** 修复 O2：LLM 调用重试退避参数 */
+    @Value("${app.llm.retry.max-attempts:3}")
+    private int llmRetryMaxAttempts;
+    @Value("${app.llm.retry.initial-backoff-ms:500}")
+    private long llmRetryInitialBackoffMs;
+    @Value("${app.llm.retry.max-backoff-ms:4000}")
+    private long llmRetryMaxBackoffMs;
+
+    /** 修复 O9：关键词检索是否并行执行 */
+    @Value("${app.refresh.parallel-enabled:true}")
+    private boolean refreshParallelEnabled;
+
+    /** 修复 O9：并行检索复用的专用线程池（复用 Agent 线程池，避免额外创建） */
+    @Resource(name = "agentTaskExecutor")
+    private Executor refreshExecutor;
 
     @Override
     public List<DestinationVO> getFeaturedDestinations(Integer limit) {
@@ -102,8 +135,6 @@ public class DestinationServiceImpl implements DestinationService {
      * 使用 AI + 网页搜索生成候选目的地
      */
     private List<Destination> generateCandidates() {
-        List<Destination> candidates = new ArrayList<>();
-
         // 定义多个搜索关键词，增加多样性
         String[] keywords = {
                 "2026年热门旅游目的地推荐",
@@ -111,24 +142,38 @@ public class DestinationServiceImpl implements DestinationService {
                 "自然风光旅游胜地"
         };
 
+        // 修复 O9：原实现串行处理 3 个关键词并 Thread.sleep(1000) 限速，总耗时 ≈ 3×(搜索+LLM)+3s。
+        // 改为并行执行，把串行等待压缩为一个并发窗口；可用 app.refresh.parallel-enabled=false 回退串行。
+        List<CompletableFuture<List<Destination>>> futures = new ArrayList<>(keywords.length);
         for (String keyword : keywords) {
+            if (refreshParallelEnabled) {
+                futures.add(CompletableFuture.supplyAsync(() -> extractByKeyword(keyword), refreshExecutor));
+            } else {
+                futures.add(CompletableFuture.completedFuture(extractByKeyword(keyword)));
+            }
+        }
+
+        List<Destination> candidates = new ArrayList<>();
+        for (CompletableFuture<List<Destination>> future : futures) {
             try {
-                // 使用网页搜索工具
-                String searchResult = webSearchTool.search(keyword);
-
-                // 使用 AI 提取和结构化信息
-                List<Destination> extracted = extractDestinationsFromSearch(searchResult, keyword);
-                candidates.addAll(extracted);
-
-                // 避免请求过快
-                Thread.sleep(1000);
-
+                candidates.addAll(future.join());
             } catch (Exception e) {
-                log.error("搜索关键词 {} 失败", keyword, e);
+                log.error("关键词候选抽取失败", e);
             }
         }
 
         return candidates;
+    }
+
+    /** 单个关键词的「网页搜索 + AI 抽取」流程（供并行调用，内部自吞异常避免拖垮整批） */
+    private List<Destination> extractByKeyword(String keyword) {
+        try {
+            String searchResult = webSearchTool.search(keyword);
+            return extractDestinationsFromSearch(searchResult, keyword);
+        } catch (Exception e) {
+            log.error("搜索关键词 {} 失败", keyword, e);
+            return Collections.emptyList();
+        }
     }
 
     /**
@@ -159,10 +204,18 @@ public class DestinationServiceImpl implements DestinationService {
                 """, searchResult);
 
         try {
+            // 修复 O4：抽取步骤使用轻量模型（app.llm.extract-model，默认与主模型一致，行为不变）
+            ChatOptions extractOptions = DashScopeChatOptions.builder().withModel(extractModel).build();
             ChatClient chatClient = chatClientBuilder.build();
-            String response = chatClient.prompt(new Prompt(prompt))
-                    .call()
-                    .content();
+            // 修复 O2：对限流（429）与瞬时 5xx / 连接抖动做指数退避重试
+            String response = LlmRetryUtils.callWithRetry(
+                    () -> chatClient.prompt(new Prompt(List.of(new UserMessage(prompt)), extractOptions))
+                            .call()
+                            .content(),
+                    llmRetryMaxAttempts,
+                    llmRetryInitialBackoffMs,
+                    llmRetryMaxBackoffMs,
+                    "destination.extract");
 
             // 解析 JSON
             return parseDestinationsFromJson(response, keyword);
@@ -212,8 +265,9 @@ public class DestinationServiceImpl implements DestinationService {
                 // 生成真实图片 URL
                 dest.setImageUrl(searchDestinationImage(dest.getName(), dest.getCountry()));
 
-                // 初始分数
-                dest.setScore(BigDecimal.valueOf(50.0 + Math.random() * 50));
+                // 初始分数（修复 E35/D25：改用名称+国家的稳定哈希，保证同一候选两次运行结果可复现）
+                double stableScore = 50.0 + (Math.floorMod(Objects.hash(dest.getName(), dest.getCountry()), 5000) / 100.0);
+                dest.setScore(BigDecimal.valueOf(stableScore));
 
                 destinations.add(dest);
             }
@@ -229,11 +283,15 @@ public class DestinationServiceImpl implements DestinationService {
      * 使用 Pexels API 搜索真实图片
      */
     private String searchDestinationImage(String name, String country) {
+        // 修复 E6/D1：未配置 Key 时直接返回占位图，避免使用硬编码密钥
+        if (StrUtil.isBlank(pexelsApiKey)) {
+            return fallbackImage(name);
+        }
         try {
             String query = name + " " + country + " travel";
 
             Map<String, String> headers = new HashMap<>();
-            headers.put("Authorization", "fVCsVgtgxpOsTnHSuHBF18xrAIz1yAQwR2uCTYCRDowxSBqL8NPweWyP");
+            headers.put("Authorization", pexelsApiKey);
 
             Map<String, Object> params = new HashMap<>();
             params.put("query", query);
@@ -257,10 +315,13 @@ public class DestinationServiceImpl implements DestinationService {
             log.error("搜索图片失败: {}", name, e);
         }
 
-        // 失败时返回 Unsplash 占位图
-        int seed = Math.abs(name.hashCode());
-        return String.format("https://source.unsplash.com/800x600/?%s&sig=%d",
-                name.toLowerCase().replace(" ", ","), seed);
+        // 失败时返回稳定占位图
+        return fallbackImage(name);
+    }
+
+    private String fallbackImage(String name) {
+        int seed = Math.abs(Objects.hashCode(name));
+        return String.format("https://picsum.photos/seed/%d/800/600", seed);
     }
 
     /**
@@ -326,10 +387,22 @@ public class DestinationServiceImpl implements DestinationService {
                 dest.setUpdateTime(now);
                 destinationMapper.updateById(dest);
             } else {
-                // 插入
+                // 插入（修复 E30/D20：并发下唯一键冲突降级为更新，避免异常中断整个 @Transactional 循环）
                 dest.setCreateTime(now);
                 dest.setUpdateTime(now);
-                destinationMapper.insert(dest);
+                try {
+                    destinationMapper.insert(dest);
+                } catch (DuplicateKeyException dup) {
+                    log.warn("目的地并发插入冲突，降级为更新: {}|{}", dest.getName(), dest.getCountry());
+                    Destination concurrent = destinationMapper.selectOne(new LambdaQueryWrapper<Destination>()
+                            .eq(Destination::getName, dest.getName())
+                            .eq(Destination::getCountry, dest.getCountry()));
+                    if (concurrent != null) {
+                        dest.setId(concurrent.getId());
+                        dest.setCreateTime(concurrent.getCreateTime());
+                        destinationMapper.updateById(dest);
+                    }
+                }
             }
         }
 
@@ -359,6 +432,8 @@ public class DestinationServiceImpl implements DestinationService {
             tags.add(destination.getCountry());
         }
         vo.setTags(tags);
+        // 修复 O24：标注数据来源。当前目的地数据均由大模型从搜索结果生成，价格/评分/评价数为估算值。
+        vo.setDataSource("llm");
 
         DestinationVO.HighlightVO highlight1 = new DestinationVO.HighlightVO();
         highlight1.setIcon("landscape");

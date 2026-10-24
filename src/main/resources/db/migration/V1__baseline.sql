@@ -1,0 +1,16 @@
+-- 修复 O11：Flyway 版本化迁移基线（baseline）。
+--
+-- 背景：
+--   项目原有建表脚本位于 classpath:db/ 下（init.sql、migration_*.sql、update_existing_data.sql 等），
+--   此前依赖手工执行、无版本记录，无法确定「谁执行了哪个脚本」。
+--
+-- 纳管建议：
+--   1) 将现有 db/*.sql 的内容按依赖顺序整理为 V2__xxx.sql、V3__xxx.sql ...
+--   2) 每个脚本保持幂等（CREATE TABLE IF NOT EXISTS / INSERT ... ON DUPLICATE KEY UPDATE）
+--   3) 设置环境变量 FLYWAY_ENABLED=true 后启动，Flyway 会创建 flyway_schema_history 记录执行历史
+--
+-- 安全说明：
+--   application.yml 中 spring.flyway.enabled 默认为 false，本文件在未显式启用时不会被执行，
+--   因此不会影响现有启动流程与数据。
+--
+-- 本文件作为迁移起点（V1），不包含任何变更语句，仅用于建立基线。

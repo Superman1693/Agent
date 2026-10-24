@@ -36,24 +36,37 @@ public class GlobalExceptionHandler {
         return ResponseEntity.ok(ResultUtils.error(ErrorCode.NOT_LOGIN, "无效的认证信息"));
     }
 
-    /** 参数校验失败 → PARAMS_ERROR(40000) */
+    /** 参数校验失败 → PARAMS_VALIDATION_ERROR(40001) */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<BaseResponse<?>> handleValidation(MethodArgumentNotValidException e) {
         String msg = e.getBindingResult().getFieldErrors().stream()
                 .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
                 .collect(Collectors.joining("; "));
         log.warn("参数校验失败: {}", msg);
-        return ResponseEntity.ok(ResultUtils.error(ErrorCode.PARAMS_ERROR, msg));
+        return ResponseEntity.ok(ResultUtils.error(ErrorCode.PARAMS_VALIDATION_ERROR, msg, ""));
+    }
+
+    /** 参数绑定/约束校验失败（如 @RequestParam 校验）→ PARAMS_VALIDATION_ERROR(40001) */
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    public ResponseEntity<BaseResponse<?>> handleConstraintViolation(jakarta.validation.ConstraintViolationException e) {
+        String msg = e.getConstraintViolations().stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .collect(Collectors.joining("; "));
+        log.warn("参数约束校验失败: {}", msg);
+        return ResponseEntity.ok(ResultUtils.error(ErrorCode.PARAMS_VALIDATION_ERROR, msg, ""));
     }
 
     /**
      * 兜底：未知运行时异常 → SYSTEM_ERROR(50000)
      * 使用 ResponseEntity 避免 SSE 接口（produces=text/event-stream）抛异常时
      * 出现 HttpMediaTypeNotAcceptableException
+     *
+     * 安全修复 E18/D5：不再把原始异常 message 透传给客户端（SQL 片段、表名、
+     * 类名与包结构都会泄露），仅返回统一文案，详细信息只写服务端日志。
      */
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<BaseResponse<?>> runtimeExceptionHandler(RuntimeException e) {
         log.error("runtimeException: {}", e.getMessage(), e);
-        return ResponseEntity.ok(ResultUtils.error(ErrorCode.SYSTEM_ERROR, e.getMessage(), ""));
+        return ResponseEntity.ok(ResultUtils.error(ErrorCode.SYSTEM_ERROR, "系统内部异常，请稍后重试", ""));
     }
 }

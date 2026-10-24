@@ -42,8 +42,10 @@ public class AuthInterceptor implements HandlerInterceptor {
         }
 
         // 1. 优先尝试 API Key 认证（Header: X-Api-Key 或 Query: apiKey）
-        String apiKey = request.getHeader("X-Api-Key");
-        if (!StringUtils.hasText(apiKey)) {
+        // 安全修复 E20/D8：/apikey/** 只允许 JWT 认证，禁止用 API Key 自举创建新 Key（否则配额可无限续杯）
+        boolean jwtOnlyPath = requestUri != null && requestUri.contains("/apikey/");
+        String apiKey = jwtOnlyPath ? null : request.getHeader("X-Api-Key");
+        if (!StringUtils.hasText(apiKey) && !jwtOnlyPath) {
             apiKey = request.getParameter("apiKey");
         }
         if (StringUtils.hasText(apiKey)) {

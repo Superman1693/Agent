@@ -1,10 +1,8 @@
 package com.ahead.aiagent.agent;
 
-import com.ahead.aiagent.advisor.MySimpleLoggerAdvisor;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
-
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
@@ -13,8 +11,10 @@ import org.springframework.stereotype.Component;
 @Component
 public class Manus extends  ToolCallAgent{
 
-    public Manus(ToolCallback[] allTools, ChatModel dashscopeChatModel) {
-        super(allTools);
+    public Manus(ToolCallback[] allTools,
+                 @Value("${app.llm.decision-model:${spring.ai.dashscope.chat.options.model:qwen-plus}}") String modelName,
+                 ChatClient manusChatClient) {
+        super(allTools, modelName);
         this.setName("Manus");
         String SYSTEM_PROMPT = """  
                 You are Manus, an all-capable AI assistant, aimed at solving any task presented by the user.  
@@ -36,10 +36,7 @@ public class Manus extends  ToolCallAgent{
                 """;
         this.setNextStepPrompt(NEXT_STEP_PROMPT);
         this.setMaxSteps(20);
-        //初始化AI客户端
-        ChatClient chatClient = ChatClient.builder(dashscopeChatModel)
-                .defaultAdvisors(new MySimpleLoggerAdvisor())
-                .build();
-        this.setChatClient(chatClient);
+        // 修复 O6：复用 Spring 容器中的单例 ChatClient（含 advisor 链），避免每请求重复构建
+        this.setChatClient(manusChatClient);
     }
 }

@@ -6,6 +6,7 @@ import com.ahead.aiagent.common.ResultUtils;
 import com.ahead.aiagent.exception.BusinessException;
 import com.ahead.aiagent.model.dto.PasswordResetRequest;
 import com.ahead.aiagent.model.dto.UserLoginRequest;
+import com.ahead.aiagent.model.dto.PasswordResetRequest;
 import com.ahead.aiagent.model.dto.UserRegisterRequest;
 import com.ahead.aiagent.model.dto.UserUpdateRequest;
 import com.ahead.aiagent.model.vo.LoginVO;
@@ -38,6 +39,12 @@ public class UserController {
     @PostMapping("/login")
     public BaseResponse<LoginVO> login(@Valid @RequestBody UserLoginRequest request) {
         return ResultUtils.success(userService.login(request));
+    }
+
+    /** 找回密码（无需认证） */
+    @PostMapping("/reset-password")
+    public BaseResponse<UserVO> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
+        return ResultUtils.success(userService.resetPassword(request));
     }
 
     /** 获取当前登录用户信息（需认证） */

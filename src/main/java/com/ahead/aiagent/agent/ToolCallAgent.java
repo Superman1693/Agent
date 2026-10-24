@@ -39,13 +39,17 @@ public class ToolCallAgent extends  ReActAgent{
     private final ChatOptions chatOptions;
 
     public ToolCallAgent(ToolCallback[] availableTools) {
+        this(availableTools, "qwen-plus");
+    }
+
+    public ToolCallAgent(ToolCallback[] availableTools, String modelName) {
         super();
         this.availableTools = availableTools;
         this.toolCallingManager = ToolCallingManager.builder().build();
         //禁用Spring AI内置的工具调用机制，自己维护选项和消息上下文
         this.chatOptions = DashScopeChatOptions.builder()
                 .withInternalToolExecutionEnabled(false)
-                .withModel("qwen-plus")
+                .withModel(modelName)
                 .build();
     }
 

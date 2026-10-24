@@ -63,6 +63,12 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- 安全修复 E19/D6：找回密码邮箱验证码 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-all</artifactId>
@@ -77,7 +83,7 @@
         <dependency>
             <groupId>com.alibaba</groupId>
             <artifactId>dashscope-sdk-java</artifactId>
-            <version>2.19.1</version>
+            <version>2.22.0</version>
         </dependency>
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
@@ -183,6 +189,12 @@
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
             <version>3.5.14</version>
         </dependency>
+        <!-- 修复 E2/D12：3.5.9+ 起 PaginationInnerInterceptor 被拆分到该模块，缺失会导致分页插件不可用 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>3.5.14</version>
+        </dependency>
         <!-- 阿里云OSS -->
         <dependency>
             <groupId>com.aliyun.oss</groupId>
@@ -204,6 +216,26 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- 修复 O13：AI 链路可观测性（Actuator + Micrometer Prometheus） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- 修复 O11：数据库变更版本化管理（默认关闭，见 spring.flyway.enabled） -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
         </dependency>
     </dependencies>
 

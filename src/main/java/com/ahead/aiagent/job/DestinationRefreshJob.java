@@ -17,10 +17,10 @@ public class DestinationRefreshJob {
     private final DestinationService destinationService;
 
     /**
-     * 每周一凌晨 2 点执行
+     * 每周一凌晨 2 点执行（正式周期）
      * cron: 秒 分 时 日 月 周
      */
-    @Scheduled(cron = "0 0 2 ? * MON")
+    @Scheduled(cron = "${app.job.destination-weekly-cron:0 0 2 ? * MON}")
     public void refreshDestinations() {
         log.info("定时任务：开始刷新精选目的地");
         try {
@@ -32,12 +32,12 @@ public class DestinationRefreshJob {
     }
 
     /**
-     * 手动触发刷新（用于测试）
-     * 每天凌晨 3 点执行一次（可根据需要调整或删除）
+     * 修复 E10/O8：原「每天 3 点」测试任务与周一正式任务重复，导致一周实际执行 8 次昂贵任务。
+     * 改为由 app.job.test-daily-cron 控制，默认值 "-" 表示禁用（Spring 的 CRON_DISABLED）。
      */
-    @Scheduled(cron = "0 0 3 * * ?")
+    @Scheduled(cron = "${app.job.test-daily-cron:-}")
     public void dailyRefresh() {
-        log.info("定时任务：每日刷新精选目的地");
+        log.info("定时任务：每日刷新精选目的地（测试任务）");
         try {
             destinationService.refreshDestinations();
             log.info("定时任务：每日刷新成功");

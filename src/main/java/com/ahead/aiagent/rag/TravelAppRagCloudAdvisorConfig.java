@@ -15,7 +15,8 @@ import org.springframework.context.annotation.Configuration;
 @Slf4j
 public class TravelAppRagCloudAdvisorConfig {
 
-    @Value("${spring.ai.dashscope.api-key}")
+    // 修复 E25/O21：加默认值，避免缺少 dashscope key 时应用启动失败
+    @Value("${spring.ai.dashscope.api-key:}")
     private String dashScopeApiKey;
 
     @Bean
