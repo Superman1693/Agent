@@ -48,6 +48,8 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 "/itinerary/**", "/order/**", "/favorite/**", "/api/**", "/notification/**",
                 // 安全修复 E4/E5/D2/D3：昂贵的刷新任务与会写库的 hotdata 接口必须鉴权
                 "/destination/refresh", "/recommendation/refresh", "/recommendation/hotdata")
-                .excludePathPatterns("/user/register", "/user/login", "/api/user/register", "/api/user/login");
+                // 功能5：行程分享查看为公开端点（按 token 鉴权，无需登录；保留 context-path 变体，仿现有写法）
+                .excludePathPatterns("/user/register", "/user/login", "/api/user/register", "/api/user/login",
+                        "/itinerary/share/**", "/api/itinerary/share/**");
     }
 }

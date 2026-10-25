@@ -45,6 +45,12 @@ public class DestinationVO {
      */
     private String dataSource;
 
+    /** 功能6：用户评价均分（1 位小数），无评价为 null（仅目的地详情聚合） */
+    private BigDecimal userAvgRating;
+
+    /** 功能6：用户评价条数，无评价为 null（仅目的地详情聚合） */
+    private Long userReviewCount;
+
     private List<String> tags;
 
     private List<HighlightVO> highlights;

@@ -10,6 +10,11 @@ public class ItineraryPlaceVO implements Serializable {
 
     private Long id;
 
+    private Integer dayNumber;
+
+    /** 同一天内展示顺序，越小越靠前（功能4，前端已按此契约兼容） */
+    private Integer sortOrder;
+
     private String time;
 
     private String name;

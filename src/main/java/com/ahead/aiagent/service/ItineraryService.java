@@ -51,4 +51,19 @@ public interface ItineraryService {
      * 删除行程项
      */
     boolean deletePlace(Long placeId, Long userId);
+
+    /**
+     * 功能4：批量调整行程地点排序（同一天内按 sortOrder 升序展示）
+     */
+    void reorderPlaces(ItineraryPlaceReorderRequest request, Long userId);
+
+    /**
+     * 功能5：生成（或幂等获取）行程分享令牌
+     */
+    ItineraryShareVO shareItinerary(Long id, Long userId);
+
+    /**
+     * 功能5：免登录按分享令牌获取行程详情（token 无效抛 NOT_FOUND_ERROR）
+     */
+    ItineraryDetailVO getItineraryDetailByShareToken(String token);
 }

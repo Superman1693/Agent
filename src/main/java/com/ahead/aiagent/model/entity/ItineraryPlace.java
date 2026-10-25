@@ -19,6 +19,9 @@ public class ItineraryPlace implements Serializable {
 
     private Integer dayNumber;
 
+    /** 同一天内展示顺序，越小越靠前（功能4） */
+    private Integer sortOrder;
+
     private String time;
 
     private String name;

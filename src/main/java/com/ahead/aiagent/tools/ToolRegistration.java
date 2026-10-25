@@ -1,6 +1,7 @@
 package com.ahead.aiagent.tools;
 
 import com.ahead.aiagent.service.FileArtifactService;
+import com.ahead.aiagent.service.LocationService;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -28,6 +29,10 @@ public class ToolRegistration {
     @Resource
     private FileArtifactService fileArtifactService;
 
+    // 功能3：天气查询工具依赖的位置服务（代理 open-meteo）
+    @Resource
+    private LocationService locationService;
+
     /**
      * 单独的 WebSearchTool Bean（供 Service 层使用）
      */
@@ -44,6 +49,8 @@ public class ToolRegistration {
         ResourceDownloadTool resourceDownloadTool = new ResourceDownloadTool();
         PDFGenerationTool pdfGenerationTool = new PDFGenerationTool(fileArtifactService);
         TerminateTool terminateTool = new TerminateTool();
+        // 功能3：天气工具始终注册（内部自吞异常，不影响 Agent 链路）
+        WeatherTool weatherTool = new WeatherTool(locationService);
         if (terminalEnabled) {
             return ToolCallbacks.from(
                     fileOperationTool,
@@ -52,6 +59,7 @@ public class ToolRegistration {
                     resourceDownloadTool,
                     new TerminalOperationTool(),
                     pdfGenerationTool,
+                    weatherTool,
                     terminateTool);
         }
         return ToolCallbacks.from(
@@ -60,6 +68,7 @@ public class ToolRegistration {
                 webScrapingTool,
                 resourceDownloadTool,
                 pdfGenerationTool,
+                weatherTool,
                 terminateTool);
     }
 }

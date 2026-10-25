@@ -6,15 +6,18 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.ahead.aiagent.mapper.DestinationMapper;
+import com.ahead.aiagent.mapper.DestinationReviewMapper;
 import com.ahead.aiagent.common.ErrorCode;
 import com.ahead.aiagent.exception.BusinessException;
 import com.ahead.aiagent.model.entity.Destination;
+import com.ahead.aiagent.model.entity.DestinationReview;
 import com.ahead.aiagent.model.vo.DestinationVO;
 import com.ahead.aiagent.service.DestinationService;
 import com.ahead.aiagent.tools.WebSearchTool;
 import com.ahead.aiagent.utils.LlmRetryUtils;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +33,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -47,6 +51,8 @@ public class DestinationServiceImpl implements DestinationService {
     private final DestinationMapper destinationMapper;
     private final ChatClient.Builder chatClientBuilder;
     private final WebSearchTool webSearchTool;
+    /** 功能6：用户评价聚合（详情页均分/条数） */
+    private final DestinationReviewMapper destinationReviewMapper;
     /** 性能修复：仅用于包裹最后的批量落库段（短事务），替代原方法级 @Transactional 长事务 */
     private final PlatformTransactionManager transactionManager;
 
@@ -100,7 +106,30 @@ public class DestinationServiceImpl implements DestinationService {
         if (destination == null || !Objects.equals(destination.getIsActive(), 1)) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "目的地不存在");
         }
-        return convertToVO(destination);
+        DestinationVO vo = convertToVO(destination);
+        // 功能6：聚合用户评价均分（1 位小数）与条数，无评价保持 null
+        aggregateUserReviews(vo);
+        return vo;
+    }
+
+    /** 功能6：单条 SQL 聚合评价表（COUNT + AVG），避免 N+1 */
+    private void aggregateUserReviews(DestinationVO vo) {
+        QueryWrapper<DestinationReview> wrapper = new QueryWrapper<>();
+        wrapper.select("COUNT(*) AS review_count", "AVG(rating) AS avg_rating")
+                .eq("destination_id", vo.getId());
+        List<Map<String, Object>> rows = destinationReviewMapper.selectMaps(wrapper);
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Object count = rows.get(0).get("review_count");
+        long reviewCount = count == null ? 0L : Long.parseLong(count.toString());
+        if (reviewCount <= 0) {
+            return;
+        }
+        Object avg = rows.get(0).get("avg_rating");
+        vo.setUserReviewCount(reviewCount);
+        vo.setUserAvgRating(avg == null ? null
+                : new BigDecimal(avg.toString()).setScale(1, RoundingMode.HALF_UP));
     }
 
     @Override
@@ -436,8 +465,8 @@ public class DestinationServiceImpl implements DestinationService {
             tags.add(destination.getCountry());
         }
         vo.setTags(tags);
-        // 修复 O24：标注数据来源。当前目的地数据均由大模型从搜索结果生成，价格/评分/评价数为估算值。
-        vo.setDataSource("llm");
+        // 修复 O24：标注数据来源。实体已落库（功能6 迁移），存量/缺列场景回退 'llm'
+        vo.setDataSource(StrUtil.blankToDefault(destination.getDataSource(), "llm"));
 
         DestinationVO.HighlightVO highlight1 = new DestinationVO.HighlightVO();
         highlight1.setIcon("landscape");

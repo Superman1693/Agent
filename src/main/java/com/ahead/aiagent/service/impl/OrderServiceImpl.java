@@ -87,6 +87,10 @@ public class OrderServiceImpl implements OrderService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "订单创建失败，请稍后重试");
         }
 
+        // 下单成功即通知用户尽快支付（内容含订单号，type=order）
+        notificationService.notify(userId, "下单成功，请尽快完成支付",
+                "您的订单 " + order.getOrderNo() + " 已创建成功，请尽快完成支付。", "order");
+
         CreateOrderVO vo = new CreateOrderVO();
         vo.setOrderId(order.getId());
         vo.setOrderNo(order.getOrderNo());

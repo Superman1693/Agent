@@ -124,6 +124,9 @@ app:
     tools:
       # 安全修复 D9：终端命令工具默认关闭，确需开启设 AGENT_TOOLS_TERMINAL_ENABLED=true（应在容器/沙箱内）
       terminal-enabled: ${AGENT_TOOLS_TERMINAL_ENABLED:false}
+    # 功能8：Manus 多轮历史上下文开关。开启时 /ai/manus/chat 按 chatId 注入最近 10 轮历史并在成功后写回；
+    # 关闭时行为与原先完全一致（每轮独立会话）
+    memory-enabled: ${AGENT_MEMORY_ENABLED:true}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173}
   job:
@@ -131,6 +134,9 @@ app:
     destination-weekly-cron: "0 0 2 ? * MON"
     recommendation-monthly-cron: "0 0 2 1 * ?"
     test-daily-cron: "-"
+  # 功能2：行程出发前提醒任务（ItineraryReminderJob），默认每天早上 8 点
+  jobs:
+    reminder-cron: "${ITINERARY_REMINDER_CRON:0 0 8 * * ?}"
   # 修复 O4：分级模型。决策步骤用主模型，结构化抽取可换成更轻量的模型；
   # 默认两者一致（行为不变），需要时用环境变量切换。
   llm:

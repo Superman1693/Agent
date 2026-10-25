@@ -38,6 +38,9 @@ public class Destination {
 
     private String sourceKeyword;
 
+    /** 功能6：数据来源 llm/api/manual（迁移见 db/destination_review.sql，存量默认 llm） */
+    private String dataSource;
+
     private Integer isActive;
 
     // 详情字段

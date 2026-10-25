@@ -13,12 +13,16 @@ import com.ahead.aiagent.model.entity.Recommendation;
 import com.ahead.aiagent.model.vo.*;
 import com.ahead.aiagent.service.ItineraryService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.regex.Matcher;
@@ -34,6 +38,13 @@ public class ItineraryServiceImpl implements ItineraryService {
     private static final Pattern DAYS_PATTERN = Pattern.compile("(\\d{1,2})\\s*天");
     private static final Pattern TRAVELERS_PATTERN = Pattern.compile("(\\d{1,2})\\s*(?:人|位)");
     private static final Pattern DESTINATION_HINT_PATTERN = Pattern.compile("(?:去|到|前往|目的地[是为:]?)\\s*([\\u4e00-\\u9fa5A-Za-z·]{2,20})");
+    // 功能7：人均预算提取，匹配「人均约?¥?3000」/「人均 3000.50」
+    private static final Pattern BUDGET_PER_PERSON_PATTERN = Pattern.compile("人均\\s*约?\\s*[¥￥]?\\s*(\\d+(?:\\.\\d+)?)");
+    // 功能7：总预算兜底提取，匹配「预算[^0-9]{0,4}3000」（最多允许 4 个非数字字符，如「预算约」「预算：」）
+    private static final Pattern BUDGET_TOTAL_PATTERN = Pattern.compile("预算[^0-9]{0,4}(\\d+(?:\\.\\d+)?)");
+
+    /** 分享令牌随机源（功能5） */
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final ItineraryMapper itineraryMapper;
     private final ItineraryPlaceMapper itineraryPlaceMapper;
@@ -53,6 +64,7 @@ public class ItineraryServiceImpl implements ItineraryService {
         itinerary.setEndDate(request.getEndDate());
         itinerary.setTravelers(request.getTravelers());
         itinerary.setDestination(request.getDestination());
+        itinerary.setBudgetPerPerson(request.getBudgetPerPerson());
         itinerary.setStatus("upcoming");
 
         itineraryMapper.insert(itinerary);
@@ -108,6 +120,8 @@ public class ItineraryServiceImpl implements ItineraryService {
         createRequest.setStartDate(startDate);
         createRequest.setEndDate(endDate);
         createRequest.setTravelers(travelers);
+        // 功能7：尽力从 AI 文本提取人均预算，提取不到为 null 不阻塞保存
+        createRequest.setBudgetPerPerson(extractBudgetPerPerson(source));
 
         ItineraryVO created = createItinerary(createRequest, userId);
 
@@ -149,11 +163,35 @@ public class ItineraryServiceImpl implements ItineraryService {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限访问该行程");
         }
 
-        // 查询行程项
+        return buildDetailVO(itinerary);
+    }
+
+    /**
+     * 功能5：免登录按分享令牌获取行程详情（仅分享开启的行程可见，跳过归属校验）
+     */
+    @Override
+    public ItineraryDetailVO getItineraryDetailByShareToken(String token) {
+        if (token == null || token.isBlank()) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "分享链接无效或已失效");
+        }
+        Itinerary itinerary = itineraryMapper.selectOne(new LambdaQueryWrapper<Itinerary>()
+                .eq(Itinerary::getShareToken, token.trim()));
+        if (itinerary == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "分享链接无效或已失效");
+        }
+        return buildDetailVO(itinerary);
+    }
+
+    /**
+     * 组装行程详情 VO（归属详情与分享详情共用）
+     */
+    private ItineraryDetailVO buildDetailVO(Itinerary itinerary) {
+        // 查询行程项：功能4 起排序规则为 day_number → sort_order → id
         LambdaQueryWrapper<ItineraryPlace> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(ItineraryPlace::getItineraryId, id)
+        wrapper.eq(ItineraryPlace::getItineraryId, itinerary.getId())
                 .orderByAsc(ItineraryPlace::getDayNumber)
-                .orderByAsc(ItineraryPlace::getTime);
+                .orderByAsc(ItineraryPlace::getSortOrder)
+                .orderByAsc(ItineraryPlace::getId);
 
         List<ItineraryPlace> places = itineraryPlaceMapper.selectList(wrapper);
 
@@ -190,6 +228,9 @@ public class ItineraryServiceImpl implements ItineraryService {
         }
         if (request.getDestination() != null) {
             itinerary.setDestination(request.getDestination());
+        }
+        if (request.getBudgetPerPerson() != null) {
+            itinerary.setBudgetPerPerson(request.getBudgetPerPerson());
         }
 
         // 日期校验
@@ -313,6 +354,79 @@ public class ItineraryServiceImpl implements ItineraryService {
         return itineraryPlaceMapper.deleteById(placeId) > 0;
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void reorderPlaces(ItineraryPlaceReorderRequest request, Long userId) {
+        // 校验行程归属
+        Itinerary itinerary = itineraryMapper.selectById(request.getItineraryId());
+        if (itinerary == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "行程不存在");
+        }
+        if (!itinerary.getUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限访问该行程");
+        }
+
+        // 一次性取出该行程下所有地点，避免逐条 select 造成 N+1，同时兜底校验 placeId 归属
+        List<ItineraryPlace> places = itineraryPlaceMapper.selectList(new LambdaQueryWrapper<ItineraryPlace>()
+                .eq(ItineraryPlace::getItineraryId, itinerary.getId())
+                .select(ItineraryPlace::getId));
+        Set<Long> ownedPlaceIds = places.stream()
+                .map(ItineraryPlace::getId)
+                .collect(Collectors.toSet());
+
+        // 批量更新排序值（限定 itineraryId，双保险）
+        for (ItineraryPlaceReorderRequest.PlaceSortItem item : request.getItems()) {
+            if (!ownedPlaceIds.contains(item.getPlaceId())) {
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "行程项不存在或不属于该行程: " + item.getPlaceId());
+            }
+            itineraryPlaceMapper.update(null, new LambdaUpdateWrapper<ItineraryPlace>()
+                    .eq(ItineraryPlace::getId, item.getPlaceId())
+                    .eq(ItineraryPlace::getItineraryId, itinerary.getId())
+                    .set(ItineraryPlace::getSortOrder, item.getSortOrder()));
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ItineraryShareVO shareItinerary(Long id, Long userId) {
+        Itinerary itinerary = itineraryMapper.selectById(id);
+        if (itinerary == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "行程不存在");
+        }
+        if (!itinerary.getUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限分享该行程");
+        }
+
+        // 幂等：已有分享令牌直接返回同一 token
+        if (itinerary.getShareToken() == null || itinerary.getShareToken().isBlank()) {
+            String token = generateShareToken();
+            itinerary.setShareToken(token);
+            try {
+                itineraryMapper.updateById(itinerary);
+            } catch (DuplicateKeyException e) {
+                // 32 位随机 hex 撞唯一索引概率极低，重试一次即可
+                itinerary.setShareToken(generateShareToken());
+                itineraryMapper.updateById(itinerary);
+            }
+        }
+
+        ItineraryShareVO vo = new ItineraryShareVO();
+        vo.setShareToken(itinerary.getShareToken());
+        vo.setSharePath("/share/" + itinerary.getShareToken());
+        return vo;
+    }
+
+    /** 功能5：生成 32 位随机 hex 分享令牌 */
+    private String generateShareToken() {
+        byte[] bytes = new byte[16];
+        SECURE_RANDOM.nextBytes(bytes);
+        StringBuilder sb = new StringBuilder(32);
+        for (byte b : bytes) {
+            sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString();
+    }
+
     /**
      * 校验日期范围
      */
@@ -326,7 +440,10 @@ public class ItineraryServiceImpl implements ItineraryService {
      * 转换为VO
      */
     private ItineraryVO convertToVO(Itinerary itinerary) {
-        return BeanUtil.copyProperties(itinerary, ItineraryVO.class);
+        ItineraryVO vo = BeanUtil.copyProperties(itinerary, ItineraryVO.class);
+        // 功能7：估算总预算 = 人均预算 × 人数，任一为空则不估算
+        vo.setEstimatedBudget(computeEstimatedBudget(itinerary.getBudgetPerPerson(), itinerary.getTravelers()));
+        return vo;
     }
 
     /**
@@ -334,6 +451,8 @@ public class ItineraryServiceImpl implements ItineraryService {
      */
     private ItineraryDetailVO convertToDetailVO(Itinerary itinerary, List<ItineraryPlace> places) {
         ItineraryDetailVO vo = BeanUtil.copyProperties(itinerary, ItineraryDetailVO.class);
+        // 功能7：估算总预算 = 人均预算 × 人数，任一为空则不估算
+        vo.setEstimatedBudget(computeEstimatedBudget(itinerary.getBudgetPerPerson(), itinerary.getTravelers()));
 
         // 按天分组
         Map<Integer, List<ItineraryPlace>> placesByDay = places.stream()
@@ -421,6 +540,46 @@ public class ItineraryServiceImpl implements ItineraryService {
             return null;
         }
         return Integer.parseInt(matcher.group(1));
+    }
+
+    /**
+     * 功能7：从 AI 文本尽力提取人均预算。
+     * 优先「人均约?¥?数字」，其次「预算[^0-9]{0,4}数字」；单位「万」×10000；
+     * 提取不到返回 null，不阻塞行程保存。
+     */
+    private BigDecimal extractBudgetPerPerson(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        Matcher matcher = BUDGET_PER_PERSON_PATTERN.matcher(text);
+        if (!matcher.find()) {
+            matcher = BUDGET_TOTAL_PATTERN.matcher(text);
+            if (!matcher.find()) {
+                return null;
+            }
+        }
+        try {
+            BigDecimal amount = new BigDecimal(matcher.group(1));
+            // 数字后紧跟「万」则换算为元
+            int end = matcher.end();
+            if (end < text.length() && text.charAt(end) == '万') {
+                amount = amount.multiply(BigDecimal.valueOf(10000));
+            }
+            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                return null;
+            }
+            return amount.setScale(2, RoundingMode.HALF_UP);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 功能7：估算总预算 = 人均预算 × 人数，任一为空返回 null */
+    private BigDecimal computeEstimatedBudget(BigDecimal budgetPerPerson, Integer travelers) {
+        if (budgetPerPerson == null || travelers == null || travelers <= 0) {
+            return null;
+        }
+        return budgetPerPerson.multiply(BigDecimal.valueOf(travelers)).setScale(2, RoundingMode.HALF_UP);
     }
 
     private String extractDestination(String text) {

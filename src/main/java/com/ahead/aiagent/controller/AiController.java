@@ -4,6 +4,7 @@ import cn.hutool.json.JSONUtil;
 import com.ahead.aiagent.agent.Manus;
 import com.ahead.aiagent.agent.model.AgentState;
 import com.ahead.aiagent.app.TravelApp;
+import com.ahead.aiagent.chatmemory.FileBasedChatMemory;
 import com.ahead.aiagent.common.BaseResponse;
 import com.ahead.aiagent.common.ErrorCode;
 import com.ahead.aiagent.common.ResultUtils;
@@ -13,10 +14,13 @@ import com.ahead.aiagent.security.AuthContext;
 import com.ahead.aiagent.model.vo.AgentTraceVO;
 import com.ahead.aiagent.service.AgentTraceService;
 import com.ahead.aiagent.service.FileArtifactService;
+import com.ahead.aiagent.service.NotificationService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.http.MediaType;
@@ -75,6 +79,17 @@ public class AiController {
     private String modelName;
     @Resource(name = "manusChatClient")
     private ChatClient manusChatClient;
+    /** 功能2：站内通知生产方（订单/行程提醒/Manus 完成通知） */
+    @Resource
+    private NotificationService notificationService;
+    /** 功能8：Manus 多轮历史上下文存储（文件型会话记忆） */
+    @Resource
+    private FileBasedChatMemory fileBasedChatMemory;
+    /** 功能8：Manus 历史上下文开关，关闭时行为与原先完全一致 */
+    @Value("${app.agent.memory-enabled:true}")
+    private boolean agentMemoryEnabled;
+    /** 功能8：注入历史消息条数上限 */
+    private static final int MANUS_HISTORY_LIMIT = 10;
 
     /**
      * 将用户 ID 和前端传入的 chatId 拼接，保证不同用户的会话相互隔离。
@@ -149,10 +164,46 @@ public class AiController {
     }
 
     /**
+     * RAG 流式调用（SseEmitter 方式）：镜像 doChatWithTravelAppSseEmitter，
+     * 区别在于走 RAG 链路（查询重写 → 向量检索 → 检索增强生成）。
+     * 发送失败只记日志不中断生成；flux 异常时下发 error 事件后正常 complete。
+     */
+    @GetMapping("/rag/chat")
+    public SseEmitter doChatWithRagSseEmitter(String message, String chatId) {
+        if (message == null || message.isBlank()) {
+            throw new BusinessException(ErrorCode.NULL_ERROR, "message 不能为空");
+        }
+        SseEmitter sseEmitter = new SseEmitter(180000L);
+        travelApp.doChatWithRagByStream(message, resolveSessionId(chatId))
+                .subscribe(
+                        chunk -> {
+                            try {
+                                sseEmitter.send(chunk);
+                            } catch (Exception e) {
+                                // 客户端断开是常见原因，吞掉避免中断流式生成
+                                log.warn("RAG SSE 发送失败（客户端可能已断开）: {}", e.getMessage());
+                            }
+                        },
+                        error -> {
+                            log.error("RAG 流式生成异常: {}", error.getMessage());
+                            try {
+                                sseEmitter.send(SseEmitter.event().name("error").data("生成失败，请稍后再试"));
+                            } catch (Exception ignored) {
+                                // 客户端已断开，事件发不出去，直接收尾
+                            }
+                            sseEmitter.complete();
+                        },
+                        sseEmitter::complete);
+        return sseEmitter;
+    }
+
+    /**
      * SSE 流式调用 Manus 超级智能体
+     *
+     * @param chatId 可选会话 ID（默认 "default"），开启 app.agent.memory-enabled 时用于隔离多轮历史上下文
      */
     @GetMapping("/manus/chat")
-    public SseEmitter doChatWithManus(String message) {
+    public SseEmitter doChatWithManus(String message, String chatId) {
         if (message == null || message.isBlank()) {
             throw new BusinessException(ErrorCode.NULL_ERROR, "message 不能为空");
         }
@@ -160,6 +211,8 @@ public class AiController {
         Manus manus = new Manus(allTools, modelName, manusChatClient);
         SseEmitter sseEmitter = new SseEmitter(300000L);
         String runId = "manus_" + UUID.randomUUID().toString().replace("-", "");
+        // 功能8：会话 ID（userId:chatId），与 /ai/travel_app 系列共用同一套会话隔离规则
+        String sessionId = resolveSessionId(chatId);
 
         // 修复 O13：记录任务开始时间与计数，用于成功率 / 耗时 / 步数指标
         long startAt = System.currentTimeMillis();
@@ -170,7 +223,7 @@ public class AiController {
         CompletableFuture.runAsync(() -> {
             AuthContext.set(userId, "jwt");
             try {
-                executeManusWithStructuredEvents(manus, message, userId, runId, sseEmitter, startAt);
+                executeManusWithStructuredEvents(manus, message, sessionId, userId, runId, sseEmitter, startAt);
             } finally {
                 AuthContext.clear();
             }
@@ -181,10 +234,19 @@ public class AiController {
         return sseEmitter;
     }
 
-    private void executeManusWithStructuredEvents(Manus manus, String message, Long userId, String runId,
-                                                  SseEmitter sseEmitter, long startAt) {
+    private void executeManusWithStructuredEvents(Manus manus, String message, String sessionId, Long userId,
+                                                  String runId, SseEmitter sseEmitter, long startAt) {
+        // 功能8：成功标志，finally 中据此决定是否写回会话历史（异常路径不写）
+        boolean success = false;
         try {
             manus.setState(AgentState.RUNNING);
+            // 功能8：注入最近 N 轮历史（仅保留 User/Assistant 消息，工具响应等消息无法直接回放，过滤掉）
+            if (agentMemoryEnabled) {
+                List<Message> history = fileBasedChatMemory.get(sessionId, MANUS_HISTORY_LIMIT);
+                history.stream()
+                        .filter(m -> m instanceof UserMessage || m instanceof AssistantMessage)
+                        .forEach(manus.getMessageList()::add);
+            }
             manus.getMessageList().add(new UserMessage(buildChineseConstrainedPrompt(message)));
 
             sendEvent(sseEmitter, "thought", runId, 0, Map.of("content", "开始分析并规划执行步骤"));
@@ -246,6 +308,9 @@ public class AiController {
             sendEvent(sseEmitter, "done", runId, lastStep, Map.of("status", "finished"));
             // 修复 O13：成功完成打点（耗时 + 步数）
             agentMetrics.taskSucceeded(System.currentTimeMillis() - startAt, lastStep);
+            // 功能2：正常结束发完 done 事件后通知用户（异常路径不会走到这里）
+            notificationService.notify(userId, "AI 行程规划已完成", summarize(finalSummary, 200), "system");
+            success = true;
             safeComplete(sseEmitter);
         } catch (Exception e) {
             log.error("Manus 任务执行失败, runId={}", runId, e);
@@ -255,7 +320,41 @@ public class AiController {
             safeCompleteWithError(sseEmitter, e);
         } finally {
             manus.setState(AgentState.FINISHED);
+            // 功能8：仅正常结束时写回本轮 user message + 最终 assistant 回复
+            if (agentMemoryEnabled && success) {
+                saveManusHistory(sessionId, message, manus.getMessageList());
+            }
         }
+    }
+
+    /**
+     * 功能8：把本轮对话写回文件会话记忆（原始用户消息 + 最终 assistant 回复）。
+     * 历史写入属非关键路径，失败只记日志。
+     */
+    private void saveManusHistory(String sessionId, String userMessage, List<Message> messageList) {
+        try {
+            List<Message> toSave = new ArrayList<>();
+            toSave.add(new UserMessage(userMessage));
+            String reply = extractFinalAssistantText(messageList);
+            if (reply != null && !reply.isBlank()) {
+                toSave.add(new AssistantMessage(reply));
+            }
+            fileBasedChatMemory.add(sessionId, toSave);
+        } catch (Exception e) {
+            log.warn("写入 Manus 会话历史失败: sessionId={}, {}", sessionId, e.getMessage());
+        }
+    }
+
+    /** 功能8：从消息列表中取最后一条非空 assistant 回复（跳过工具响应等中间消息） */
+    private String extractFinalAssistantText(List<Message> messageList) {
+        for (int i = messageList.size() - 1; i >= 0; i--) {
+            Message m = messageList.get(i);
+            if (m instanceof AssistantMessage assistantMessage
+                    && assistantMessage.getText() != null && !assistantMessage.getText().isBlank()) {
+                return assistantMessage.getText();
+            }
+        }
+        return "";
     }
 
     /** 修复 E14/D16：客户端已断开时 complete/completeWithError 也可能抛异常，统一吞掉避免影响任务收尾 */

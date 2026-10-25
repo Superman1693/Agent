@@ -142,4 +142,36 @@ public class ItineraryController {
         boolean result = itineraryService.deletePlace(placeId, userId);
         return ResultUtils.success(result, "ok");
     }
+
+    @Operation(summary = "批量调整行程地点排序")
+    @PostMapping("/place/reorder")
+    public BaseResponse<Void> reorderPlaces(@Valid @RequestBody ItineraryPlaceReorderRequest request) {
+        Long userId = AuthContext.getUserId();
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.NOT_LOGIN);
+        }
+
+        itineraryService.reorderPlaces(request, userId);
+        return ResultUtils.success(null, "ok");
+    }
+
+    @Operation(summary = "生成行程分享链接（幂等，重复调用返回同一令牌）")
+    @PostMapping("/{id}/share")
+    public BaseResponse<ItineraryShareVO> shareItinerary(@PathVariable Long id) {
+        Long userId = AuthContext.getUserId();
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.NOT_LOGIN);
+        }
+
+        ItineraryShareVO share = itineraryService.shareItinerary(id, userId);
+        return ResultUtils.success(share, "ok");
+    }
+
+    @Operation(summary = "按分享令牌获取行程详情（免登录）")
+    @GetMapping("/share/{token}")
+    public BaseResponse<ItineraryDetailVO> getSharedItinerary(@PathVariable String token) {
+        // 免登录端点：不校验 AuthContext，按令牌直接返回详情（服务层跳过归属校验）
+        ItineraryDetailVO detail = itineraryService.getItineraryDetailByShareToken(token);
+        return ResultUtils.success(detail, "ok");
+    }
 }

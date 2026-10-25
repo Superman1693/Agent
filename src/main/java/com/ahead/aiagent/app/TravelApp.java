@@ -117,6 +117,37 @@ public class TravelApp {
         private MySimpleLoggerAdvisor mySimpleLoggerAdvisor;
 
         public String doChatWithRag(String message, String chatId) {
+                String augmentedMessage = buildRagAugmentedMessage(message);
+                ChatResponse chatResponse = getRagChatClient()
+                                .prompt()
+                                .user(augmentedMessage)
+                                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+                                .call()
+                                .chatResponse();
+                String content = chatResponse.getResult().getOutput().getText();
+                log.info("content:{}", content);
+                return content;
+        }
+
+        /**
+         * RAG 流式对话：QueryRewriter 重写 → 向量检索 → 拼接上下文 → .stream().content() 逐段输出。
+         * 复用懒加载缓存的干净 RAG ChatClient（无 ReReadingAdvisor），链路与 doChatWithRag 完全一致。
+         */
+        public Flux<String> doChatWithRagByStream(String message, String chatId) {
+                String augmentedMessage = buildRagAugmentedMessage(message);
+                return getRagChatClient()
+                                .prompt()
+                                .user(augmentedMessage)
+                                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+                                .stream()
+                                .content();
+        }
+
+        /**
+         * RAG 前置链路：查询重写 + 向量检索 + 手动拼接参考资料上下文（同步/流式共用）。
+         * 依赖缺失时抛出与 doChatWithRag 一致的异常。
+         */
+        private String buildRagAugmentedMessage(String message) {
                 if (pgVectorVectorStore == null || queryRewriter == null || travelAppVectorStore == null) {
                         throw new IllegalStateException("RAG 能力未启用：请配置向量库与查询重写器");
                 }
@@ -133,17 +164,7 @@ public class TravelApp {
                 // 手动拼接RAG上下文直接注入user message
                 StringBuilder context = new StringBuilder();
                 docs.forEach(d -> context.append(d.getText()).append("\n\n"));
-                String augmentedMessage = "参考资料：\n" + context + "\n根据以上参考资料，回答问题：" + rewriteMessage;
-
-                ChatResponse chatResponse = getRagChatClient()
-                                .prompt()
-                                .user(augmentedMessage)
-                                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
-                                .call()
-                                .chatResponse();
-                String content = chatResponse.getResult().getOutput().getText();
-                log.info("content:{}", content);
-                return content;
+                return "参考资料：\n" + context + "\n根据以上参考资料，回答问题：" + rewriteMessage;
         }
 
         private ChatClient getRagChatClient() {
